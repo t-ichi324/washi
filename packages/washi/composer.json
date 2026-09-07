@@ -1,0 +1,11 @@
+{
+    "name": "washi/washi",
+    "description": "Washi: page + view PHP framework. One front controller, pages/ files, plain PHP views, middleware chain.",
+    "type": "library",
+    "license": "MIT",
+    "require": { "php": ">=8.1", "ext-mbstring": "*", "washi/support": "*", "washi/db": "*" },
+    "autoload": {
+        "psr-4": { "Washi\\": "src/" },
+        "files": [ "inc/helpers.php" ]
+    }
+}

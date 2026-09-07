@@ -1,0 +1,4 @@
+[2026-09-07 11:41:59] WARNING: HTTP 419: CSRF token mismatch. {"path":"/notes/new"}
+[2026-09-07 11:42:43] WARNING: HTTP 419: CSRF token mismatch. {"path":"/notes/new"}
+[2026-09-07 11:43:00] WARNING: HTTP 419: CSRF token mismatch. {"path":"/notes/new"}
+[2026-09-07 11:45:20] WARNING: HTTP 419: CSRF token mismatch. {"path":"/notes/new"}

@@ -1,0 +1,6 @@
+[2026-09-07 11:40:52] ERROR: Unhandled: TypeError: Washi\Db\Query::run(): Argument #3 ($kind) must be of type int, string given, called in /home/admin123/www/washi/packages/db/src/Query.php on line 736 @ /home/admin123/www/washi/packages/db/src/Query.php:888
+[2026-09-07 11:40:52] ERROR: Unhandled: TypeError: Washi\Db\Query::run(): Argument #3 ($kind) must be of type int, string given, called in /home/admin123/www/washi/packages/db/src/Query.php on line 736 @ /home/admin123/www/washi/packages/db/src/Query.php:888
+[2026-09-07 11:40:52] WARNING: HTTP 405: Allowed: GET, HEAD {"path":"/api/time"}
+[2026-09-07 11:42:42] WARNING: HTTP 405: Allowed: GET, HEAD {"path":"/api/time"}
+[2026-09-07 11:42:59] WARNING: HTTP 405: Allowed: GET, HEAD {"path":"/api/time"}
+[2026-09-07 11:45:19] WARNING: HTTP 405: Allowed: GET, HEAD {"path":"/api/time"}

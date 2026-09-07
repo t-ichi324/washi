@@ -1,0 +1,8 @@
+{
+    "name": "washi/db",
+    "description": "Washi DB: PDO query builder, typed Entity, pagination, SQL migrations. Usable standalone.",
+    "type": "library",
+    "license": "MIT",
+    "require": { "php": ">=8.1", "ext-pdo": "*", "washi/support": "*" },
+    "autoload": { "psr-4": { "Washi\\Db\\": "src/" } }
+}
