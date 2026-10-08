@@ -39,6 +39,16 @@ class Request
         $basePath = rtrim(str_replace('\\', '/', dirname($scriptName)), '/');
         $uri = $server['REQUEST_URI'] ?? '/';
         $path = parse_url($uri, PHP_URL_PATH) ?? '/';
+
+        // .htaccess で public/ へ内部転送していると、SCRIPT_NAME は
+        // /app/public/index.php なのに URL は /app/... になる。
+        // その場合 basePath をそのまま剥がせないので、末尾の public/ を落として試す。
+        if ($basePath !== '' && !str_starts_with($path, $basePath)) {
+            $parent = preg_replace('#/[^/]+$#', '', $basePath);
+            if ($parent !== '' && $parent !== $basePath && str_starts_with($path, $parent)) {
+                $basePath = $parent;
+            }
+        }
         if ($basePath !== '' && str_starts_with($path, $basePath)) $path = substr($path, strlen($basePath));
         if ($path !== '' && str_starts_with($path, '/index.php')) $path = substr($path, 10);
         $path = '/' . trim(rawurldecode($path), '/');

@@ -296,7 +296,8 @@ washi/
 ├── examples/hello/index.php     1 ファイル版（明示ルートのみ、DB 自動 SQLite）
 ├── examples/notes/              pages + views + lib/Note.php + db/migrations の CRUD
 ├── tests/smoke.sh               両サンプルを PHP 組み込みサーバーで起動し curl で検証（末尾で query_groups.php も実行）
-└── tests/query_groups.php       where(fn) のグループ条件（プレースホルダ衝突・入れ子）を Query 直叩きで検証
+├── tests/query_groups.php       where(fn) のグループ条件（プレースホルダ衝突・入れ子）を Query 直叩きで検証
+└── tests/request_basepath.php   サブディレクトリ設置（+ public/ への内部転送）時のパス解決
 ```
 
 ### 依存の向き（守ること）
@@ -365,5 +366,6 @@ fzr を知らなくても Washi を扱う上で困ることはない。
 | `washi/db` は HTTP 層に依存しない | 単体ライブラリとして他プロジェクトにも `require` できる状態を保つ |
 | 静的ファサードは `Auth` `Session` `Security` `View` `Log` `Db` に限定し、`Request`/`Response` はインスタンス | ミドルウェアが Request を受け Response を返す形にするため。`request()` ヘルパーで手軽さは維持 |
 | 名前 Washi | 「薄くて軽いのに強い」紙。page = 1 枚の紙。Packagist の `washi/*` が空いていた |
+| `basePath` は SCRIPT_NAME 由来だが、剥がせないときは末尾 1 階層を落として再試行する | `.htaccess` で `public/` へ内部転送すると SCRIPT_NAME は `/app/public/index.php`、URL は `/app/...` になり、prefix が一致せず path を剥がせない。結果 basePath が `/app/public` のままになり、全 URL が index に落ちて 404 が出せなくなる。検証は `tests/request_basepath.php` |
 | `App::run()` は `bool` を返し、フロントコントローラは `return $app->run();` と書く | `php -S ... public/index.php` ではルータスクリプトが css・画像まで受け取ってしまい 404 になる。実ファイルなら false を返して組み込みサーバーに配信させる（PHP ファイルは除外し、ソースを晒さない）。戻り値を無視する既存の `$app->run();` もそのまま動く |
 | プレースホルダ名は `count($params)` ではなく単調増加カウンタ `$phSeq`（`where(fn)` の子 Query と参照共有） | `count()` だと子 Query が空の `$params` から採番し直すため、`where('a',1)->where(fn($q) => $q->where('b',2))` で `:w0` が衝突して外側の束縛が上書きされていた（静かに誤った結果を返す）。グループは `compileConditions()` で再帰的に組む（以前は 1 段しか展開できず、入れ子は壊れた SQL になった）。検証は `tests/query_groups.php` |

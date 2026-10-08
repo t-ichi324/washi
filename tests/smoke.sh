@@ -83,4 +83,15 @@ while IFS= read -r line; do
   esac
 done <<< "$QOUT"
 
+# サブディレクトリ + .htaccess で public/ へ内部転送したときのパス解決
+echo
+echo "== washi Request: サブディレクトリ設置"
+ROUT="$(cd "$ROOT" && php tests/request_basepath.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+  esac
+done <<< "$ROUT"
+
 echo; echo "passed: $PASS  failed: $FAIL"; rm -rf "$TMP"; [ "$FAIL" -eq 0 ]
