@@ -57,7 +57,7 @@
 | デバッグ | `APP_DEBUG=true` で HTML 応答の末尾に処理時間・メモリ・SQL 一覧のパネルを注入 | `Debug` |
 | 設定 | `.env`（実環境変数が優先）+ `new App($root, [...])` の配列。ini などは無い | `Env`, `App` |
 | ログ | 日別ファイル（`storage/log/`）または stderr。`Log::exception()` は 1 行を保ったまま ctx JSON にスタックトレースと `previous` 連鎖を記録（深さは `Log::traceLimit()`、0 で無効） | `Log` |
-| 配置 | サブディレクトリ設置（`basePath` 自動検出）、PHP 組み込みサーバー、Apache/nginx の index.php フォールバック | `Request`, `App` |
+| 配置 | サブディレクトリ設置（`basePath` 自動検出）、PHP 組み込みサーバー（`return $app->run();` と書くと public/ の実ファイルはサーバーが静的配信する）、Apache/nginx の index.php フォールバック | `Request`, `App` |
 
 ### 提供していないもの（意図的）
 テンプレートエンジン（素の PHP で足りる）、DI コンテナ、ORM のリレーション定義 DSL（`rel()/relMany()` の Eager Load のみ）、
@@ -365,4 +365,5 @@ fzr を知らなくても Washi を扱う上で困ることはない。
 | `washi/db` は HTTP 層に依存しない | 単体ライブラリとして他プロジェクトにも `require` できる状態を保つ |
 | 静的ファサードは `Auth` `Session` `Security` `View` `Log` `Db` に限定し、`Request`/`Response` はインスタンス | ミドルウェアが Request を受け Response を返す形にするため。`request()` ヘルパーで手軽さは維持 |
 | 名前 Washi | 「薄くて軽いのに強い」紙。page = 1 枚の紙。Packagist の `washi/*` が空いていた |
+| `App::run()` は `bool` を返し、フロントコントローラは `return $app->run();` と書く | `php -S ... public/index.php` ではルータスクリプトが css・画像まで受け取ってしまい 404 になる。実ファイルなら false を返して組み込みサーバーに配信させる（PHP ファイルは除外し、ソースを晒さない）。戻り値を無視する既存の `$app->run();` もそのまま動く |
 | プレースホルダ名は `count($params)` ではなく単調増加カウンタ `$phSeq`（`where(fn)` の子 Query と参照共有） | `count()` だと子 Query が空の `$params` から採番し直すため、`where('a',1)->where(fn($q) => $q->where('b',2))` で `:w0` が衝突して外側の束縛が上書きされていた（静かに誤った結果を返す）。グループは `compileConditions()` で再帰的に組む（以前は 1 段しか展開できず、入れ子は壊れた SQL になった）。検証は `tests/query_groups.php` |

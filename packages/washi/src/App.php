@@ -161,9 +161,46 @@ class App
 
     // ── lifecycle ────────────────────────────────────────────────────────
 
-    public function run(): void
+    public function run(): bool
     {
+        // 組み込みサーバーが配信すべき実ファイルなら、ここでは何もせず false を返す。
+        // `return (new App(...))->run();` と書いておけば、その false がルータスクリプトの
+        // 戻り値になり、組み込みサーバーが自分でファイルを配信する。
+        if ($this->isStaticFileRequest()) return false;
+
         $this->handle($this->request())->send();
+        return true;
+    }
+
+    /**
+     * PHP 組み込みサーバー（`php -S ... public/index.php`）では、ルータスクリプトが全リクエストを
+     * 受け取ってしまい public/ の css・js・画像まで 404 になる。実在するファイルは組み込み
+     * サーバー自身に配信させる（false を返すのがその合図）。
+     *
+     * 本番の Apache/nginx はファイルが存在すれば PHP に渡さないので、ここは cli-server 限定。
+     *
+     * @return bool true なら呼び出し側は何もしない（＝サーバーに任せた）
+     */
+    private function isStaticFileRequest(): bool
+    {
+        if (PHP_SAPI !== 'cli-server') return false;
+
+        $docRoot = $_SERVER['DOCUMENT_ROOT'] ?? '';
+        $path    = parse_url((string)($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH);
+        if ($docRoot === '' || !is_string($path)) return false;
+
+        $path = rawurldecode($path);
+        if ($path === '' || str_contains($path, "\0")) return false;
+
+        $real = realpath($docRoot . '/' . ltrim($path, '/'));
+        $root = realpath($docRoot);
+        if ($real === false || $root === false || !is_file($real)) return false;
+        // ドキュメントルートの外は配信しない（../ での脱出を防ぐ）
+        if (!str_starts_with($real, $root . DIRECTORY_SEPARATOR)) return false;
+        // PHP ファイルは配信せずアプリとして動かす（ソースを晒さない）
+        if (preg_match('/\.(?:php|phtml|phar)$/i', $real)) return false;
+
+        return true;
     }
 
     public function handle(Request $request): Response

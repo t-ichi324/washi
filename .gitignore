@@ -2,5 +2,5 @@ vendor/
 composer.lock
 *.db
 *.db-*
-storage/log/
+**/storage/log/
 .env

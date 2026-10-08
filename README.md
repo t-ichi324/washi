@@ -16,13 +16,13 @@ require 'vendor/autoload.php';
 $app = new Washi\App(__DIR__);
 $app->get('/', fn() => '<h1>Hello</h1>');
 $app->get('/api/time', fn() => ['now' => date('c')]);
-$app->run();
+return $app->run();   // return で組み込みサーバーに静的ファイルを任せる
 ```
 
 ## 育てる
 
 ```
-public/index.php          $app = new Washi\App(dirname(__DIR__)); $app->run();
+public/index.php          $app = new Washi\App(dirname(__DIR__)); return $app->run();
 pages/index.php           return fn() => view('home', ['notes' => Note::all()]);
 pages/notes/edit.php      return fn(int $id) => view('notes/form', ['note' => Note::findOrFail($id)]);
 pages/notes/edit.post.php return page()->csrf()->then(fn(int $id, Washi\Request $r) => ...);

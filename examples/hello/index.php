@@ -23,4 +23,4 @@ $app->get('/db', function () {
     return ['hits' => Db::table('hits')->count()];
 });
 
-$app->run();
+return $app->run();

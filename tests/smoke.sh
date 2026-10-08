@@ -65,6 +65,10 @@ rm -f "$ROOT/examples/notes/pages/boom.php"
 check "500 logged with trace"      '"trace":['                      "$LOGLINE"
 check "500 logs previous chain"    'root cause'                     "$LOGLINE"
 check "exception log stays 1 line" "0"                              "$(printf '%s' "$LOGLINE" | wc -l | tr -d ' ')"
+# 組み込みサーバーのルータ越しでも public/ の実ファイルは静的配信される（PHP に飲まれない）
+check "static css served"          "text/css"                       "$(curl -s -i $B/css/app.css)"
+check "static css has content"     "body{color:#333}"               "$(curl -s $B/css/app.css)"
+check "php source never served"    "0"                              "$(curl -s $B/index.php | grep -c 'new Washi')"
 stop 8572
 
 # where(fn) のグループ条件: 子 Query と親でプレースホルダ名が衝突しないこと、入れ子のグループが
