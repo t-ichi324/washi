@@ -31,6 +31,13 @@ class Query
     protected array $select = ['*'];
     protected array $where = [];
     protected array $params = [];
+    /**
+     * プレースホルダ名の連番。count($params) ではなく単調増加のカウンタを使う。
+     * where(fn) のグループは子 Query とこの参照を共有するので、親子で名前が衝突しない。
+     *
+     * @var array{int} 参照共有するため 1 要素の配列で持つ
+     */
+    protected array $phSeq = [0];
     protected ?string $orderBy = null;
     protected ?int $limit = null;
     protected ?int $offset = null;
@@ -51,6 +58,13 @@ class Query
         $this->table      = $table;
         $this->fetchClass = $fetchClass;
     }
+
+    /** プレースホルダ名用の次の連番。where(fn) の子 Query とも共有される */
+    protected function nextPh(): int
+    {
+        return $this->phSeq[0]++;
+    }
+
     /**
      * テーブル指定
      *
@@ -151,6 +165,7 @@ class Query
     {
         if ($field instanceof \Closure) {
             $sub = new self($this->connection, $this->table);
+            $sub->phSeq = &$this->phSeq;   // 連番を共有して :w0 の衝突を防ぐ
             $field($sub);
             if (!empty($sub->where)) {
                 $this->where[]  = ['type' => 'group', 'conditions' => $sub->where, 'connector' => 'AND'];
@@ -189,7 +204,7 @@ class Query
             $sql = ($op === '!=' || $op === '<>') ? "{$field} IS NOT NULL" : "{$field} IS NULL";
             $this->where[] = ['type' => 'raw', 'sql' => $sql];
         } else {
-            $placeholder = ':w' . count($this->params);
+            $placeholder = ':w' . $this->nextPh();
             $this->where[] = ['type' => 'condition', 'sql' => "{$field} {$op} {$placeholder}", 'connector' => 'AND'];
             $this->params[$placeholder] = $value;
         }
@@ -227,7 +242,7 @@ class Query
         }
         $placeholders = [];
         foreach ($values as $v) {
-            $k = ':wi' . count($this->params);
+            $k = ':wi' . $this->nextPh();
             $placeholders[] = $k;
             $this->params[$k] = $v;
         }
@@ -245,7 +260,7 @@ class Query
         if (empty($values)) return $this;
         $placeholders = [];
         foreach ($values as $v) {
-            $k = ':wni' . count($this->params);
+            $k = ':wni' . $this->nextPh();
             $placeholders[] = $k;
             $this->params[$k] = $v;
         }
@@ -260,9 +275,9 @@ class Query
      */
     public function whereBetween(string $field, mixed $min, mixed $max): self
     {
-        $k1 = ':wb' . count($this->params);
+        $k1 = ':wb' . $this->nextPh();
         $this->params[$k1] = $min;
-        $k2 = ':wb' . count($this->params);
+        $k2 = ':wb' . $this->nextPh();
         $this->params[$k2] = $max;
         $this->where[] = ['type' => 'raw', 'sql' => "{$field} BETWEEN {$k1} AND {$k2}"];
         return $this;
@@ -275,7 +290,7 @@ class Query
      */
     public function whereLike(string $field, string $pattern): self
     {
-        $k = ':wl' . count($this->params);
+        $k = ':wl' . $this->nextPh();
         $this->params[$k] = $pattern;
         $this->where[] = ['type' => 'condition', 'sql' => "{$field} LIKE {$k}", 'connector' => 'AND'];
         return $this;
@@ -306,7 +321,6 @@ class Query
         $inString      = false;
         $stringChar    = '';
         $escaped       = false;
-        $baseParamIndex = count($this->params);
 
         for ($i = 0, $len = strlen($sql); $i < $len; $i++) {
             $char = $sql[$i];
@@ -333,7 +347,7 @@ class Query
             }
             if ($char === '?') {
                 if (array_key_exists($bindIndex, $bindings)) {
-                    $k = ':wr' . ($baseParamIndex + $bindIndex);
+                    $k = ':wr' . $this->nextPh();
                     $mapped[$k] = $bindings[$bindIndex];
                     $newSql .= $k;
                     $bindIndex++;
@@ -926,21 +940,26 @@ class Query
     protected function buildWhere(): string
     {
         if (empty($this->where)) return '';
+        return ' WHERE ' . $this->compileConditions($this->where);
+    }
+
+    /**
+     * 条件リストを SQL 文字列へ。group は入れ子になりうるので再帰する
+     * （先頭要素の connector は捨てる。`WHERE AND x` を作らないため）
+     */
+    protected function compileConditions(array $conditions): string
+    {
         $parts = [];
-        foreach ($this->where as $i => $w) {
+        foreach ($conditions as $i => $w) {
             $connector = ($i === 0) ? '' : (' ' . ($w['connector'] ?? 'AND') . ' ');
-            if ($w['type'] === 'group') {
-                $groupParts = [];
-                foreach ($w['conditions'] as $j => $c) {
-                    $gc = ($j === 0) ? '' : (' ' . ($c['connector'] ?? 'AND') . ' ');
-                    $groupParts[] = $gc . $c['sql'];
-                }
-                $parts[] = $connector . '(' . implode('', $groupParts) . ')';
+            if (($w['type'] ?? '') === 'group') {
+                if (empty($w['conditions'])) continue;
+                $parts[] = $connector . '(' . $this->compileConditions($w['conditions']) . ')';
             } else {
                 $parts[] = $connector . $w['sql'];
             }
         }
-        return ' WHERE ' . implode('', $parts);
+        return implode('', $parts);
     }
 
     protected function buildJoins(): string

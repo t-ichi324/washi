@@ -56,7 +56,7 @@
 | エラー処理 | `abort(404)`、`HttpException`、`Db\NotFoundException`→404、`views/_error.{status}.php`→`_error.php`→組み込み画面、`Accept: application/json` なら JSON、デバッグ時はコードプレビュー付き | `App`, `Debug` |
 | デバッグ | `APP_DEBUG=true` で HTML 応答の末尾に処理時間・メモリ・SQL 一覧のパネルを注入 | `Debug` |
 | 設定 | `.env`（実環境変数が優先）+ `new App($root, [...])` の配列。ini などは無い | `Env`, `App` |
-| ログ | 日別ファイル（`storage/log/`）または stderr | `Log` |
+| ログ | 日別ファイル（`storage/log/`）または stderr。`Log::exception()` は 1 行を保ったまま ctx JSON にスタックトレースと `previous` 連鎖を記録（深さは `Log::traceLimit()`、0 で無効） | `Log` |
 | 配置 | サブディレクトリ設置（`basePath` 自動検出）、PHP 組み込みサーバー、Apache/nginx の index.php フォールバック | `Request`, `App` |
 
 ### 提供していないもの（意図的）
@@ -275,6 +275,8 @@ Washi\Db\Db::transaction(fn() => ...);
 | `trusted_proxies` | '' | `TRUSTED_PROXIES` | `Request::ip()` で X-Forwarded-For を信頼する送信元（`*` 可） |
 | `security_headers` | true | | X-Frame-Options / nosniff / Referrer-Policy |
 
+`Log::traceLimit(int $frames)` で例外ログのスタックフレーム数を変更できる（既定 20、0 でトレース無しの 1 行に戻る）。
+
 DB 環境変数: `DB_DRIVER`（sqlite / mysql / pgsql。未設定なら SQLite `storage/app.db`）、`DB_HOST DB_PORT DB_DATABASE DB_USERNAME DB_PASSWORD DB_CHARSET DB_TIMEZONE DB_SQL_MODE DB_SCHEMA DB_SQLITE_PATH DB_SOCKET`、`DB_LOG=true` で全クエリを Log へ。
 コードからは `Washi\Db\Db::addConnection('default', Washi\Db\Connection::sqlite($path))` などで上書き可（`new App()` の前に呼ぶ）。
 
@@ -293,7 +295,8 @@ washi/
 │                                 Washi\Middleware\{Middleware, RequireAuth, RequireGuest, RequireRole, VerifyCsrf}   inc/helpers.php
 ├── examples/hello/index.php     1 ファイル版（明示ルートのみ、DB 自動 SQLite）
 ├── examples/notes/              pages + views + lib/Note.php + db/migrations の CRUD
-└── tests/smoke.sh               両サンプルを PHP 組み込みサーバーで起動し curl で 27 項目を検証
+├── tests/smoke.sh               両サンプルを PHP 組み込みサーバーで起動し curl で検証（末尾で query_groups.php も実行）
+└── tests/query_groups.php       where(fn) のグループ条件（プレースホルダ衝突・入れ子）を Query 直叩きで検証
 ```
 
 ### 依存の向き（守ること）
@@ -362,3 +365,4 @@ fzr を知らなくても Washi を扱う上で困ることはない。
 | `washi/db` は HTTP 層に依存しない | 単体ライブラリとして他プロジェクトにも `require` できる状態を保つ |
 | 静的ファサードは `Auth` `Session` `Security` `View` `Log` `Db` に限定し、`Request`/`Response` はインスタンス | ミドルウェアが Request を受け Response を返す形にするため。`request()` ヘルパーで手軽さは維持 |
 | 名前 Washi | 「薄くて軽いのに強い」紙。page = 1 枚の紙。Packagist の `washi/*` が空いていた |
+| プレースホルダ名は `count($params)` ではなく単調増加カウンタ `$phSeq`（`where(fn)` の子 Query と参照共有） | `count()` だと子 Query が空の `$params` から採番し直すため、`where('a',1)->where(fn($q) => $q->where('b',2))` で `:w0` が衝突して外側の束縛が上書きされていた（静かに誤った結果を返す）。グループは `compileConditions()` で再帰的に組む（以前は 1 段しか展開できず、入れ子は壊れた SQL になった）。検証は `tests/query_groups.php` |

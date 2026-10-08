@@ -56,6 +56,27 @@ check "echo-style page works"      "<h1>About</h1>"                 "$(curl -s $
 check "_prefixed page not routable" "404"                           "$(curl -s -o /dev/null -w '%{http_code}' $B/_layout)"
 check "path traversal blocked"     "404"                            "$(curl -s -o /dev/null -w '%{http_code}' "$B/..%2F..%2Fetc/passwd")"
 check "delete → list empty"        '"total":0'                      "$(curl $C -X POST -d "_token=$TOKEN" $B/notes/delete/1 >/dev/null; curl -s $B/api/notes)"
+
+# 500 は Log::exception 経由でスタックトレースと previous 連鎖を 1 行に残す（本番は画面に出ないため）
+printf '<?php\nreturn fn() => throw new LogicException("kaboom", 0, new RuntimeException("root cause"));\n' > "$ROOT/examples/notes/pages/boom.php"
+curl -s -o /dev/null $B/boom
+LOGLINE="$(grep 'kaboom' "$ROOT/examples/notes/storage/log/$(date +%F).log" | tail -1)"
+rm -f "$ROOT/examples/notes/pages/boom.php"
+check "500 logged with trace"      '"trace":['                      "$LOGLINE"
+check "500 logs previous chain"    'root cause'                     "$LOGLINE"
+check "exception log stays 1 line" "0"                              "$(printf '%s' "$LOGLINE" | wc -l | tr -d ' ')"
 stop 8572
+
+# where(fn) のグループ条件: 子 Query と親でプレースホルダ名が衝突しないこと、入れ子のグループが
+# SQL に落ちること（どちらも以前は壊れていた。README の既知の問題）
+echo
+echo "== washi/db Query: where(fn) グループ"
+QOUT="$(cd "$ROOT" && php tests/query_groups.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+  esac
+done <<< "$QOUT"
 
 echo; echo "passed: $PASS  failed: $FAIL"; rm -rf "$TMP"; [ "$FAIL" -eq 0 ]
