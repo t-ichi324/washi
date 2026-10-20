@@ -10,6 +10,7 @@ namespace Washi;
  *   $r->int('id')      int            $r->float('x')    float
  *   $r->bool('flag')   bool           $r->arr('tags')   array
  *   $r->all()          array          $r->only([...])   array   $r->file('upload') ?array
+ *   $r->validate(['title' => 'required|max:100'])   validated array, or back() with errors (ValidationException)
  * Handlers receive it as the first argument when they declare a `Request` parameter;
  * page code can also call the `request()` helper.
  */
@@ -96,6 +97,17 @@ class Request
             $this->inputs = array_merge($this->query, $this->post, $json);
         }
         return $this->inputs;
+    }
+
+    /**
+     * Validate the input; on failure throws ValidationException, which App answers with back() (or JSON 422).
+     *   $data = $r->validate(['title' => 'required|max:100'], ['title' => 'タイトル']);
+     * @param array<string,string|array> $rules  see Validator::make()
+     * @return array<string,mixed> the ruled fields that were sent (trimmed)
+     */
+    public function validate(array $rules, array $labels = []): array
+    {
+        return Validator::make($this, $rules, $labels)->orFail();
     }
 
     public function input(string $key, mixed $default = null): mixed

@@ -5,7 +5,7 @@
  * All are guarded with function_exists so an app may override any of them before autoload.
  *
  * Handler / flow : page() redirect() back() abort() json()
- * Views          : view() render() partial() title() h() url() csrf_field() csrf_token()
+ * Views          : view() render() partial() title() h() url() abs_url() csrf_field() csrf_token()
  * Input & state  : request() input() user() flash() flashes() old() err() has_err() env() app()
  * HTML bits      : checked() selected() disabled() options()
  * Debug          : dd() dump()
@@ -75,6 +75,11 @@ if (!function_exists('url')) {
     function url(string $path = '/', array $query = []): string { return App::current()->url($path, $query); }
 }
 
+if (!function_exists('abs_url')) {
+    /** Absolute URL with scheme + host (APP_URL when set) — for mail, QR codes and anything leaving the site */
+    function abs_url(string $path = '/', array $query = []): string { return App::current()->absoluteUrl($path, $query); }
+}
+
 if (!function_exists('redirect')) {
     function redirect(string $to, int $status = 302): Response { return Response::redirect(url($to), $status); }
 }
@@ -125,11 +130,11 @@ if (!function_exists('flashes')) {
 }
 
 if (!function_exists('old')) {
-    /** Previously submitted value (after back()), HTML-escaped */
-    function old(string $key, string $default = ''): string
+    /** Previously submitted value (after back()), HTML-escaped. $default は DB の値などそのまま渡せる（null・数値可） */
+    function old(string $key, mixed $default = ''): string
     {
         $v = \Washi\Cast::ensureScalar(Session::pull('_old', [])[$key] ?? $default);
-        return h(is_scalar($v) ? (string)$v : $default);
+        return is_scalar($v) ? h($v) : '';
     }
 }
 

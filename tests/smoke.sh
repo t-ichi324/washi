@@ -39,9 +39,11 @@ check "auto-migrate + empty list"  "まだメモがありません"           "$
 TOKEN=$(curl $C $B/notes/new | grep -o 'name="_token" value="[a-f0-9]*"' | sed 's/.*value="//;s/"//')
 [ -n "$TOKEN" ] && ok "csrf_field renders token" || fail "csrf_field renders token"
 check "POST without token → 419"   "419"                            "$(curl $C -o /dev/null -w '%{http_code}' -X POST -d 'title=x' $B/notes/new)"
+# 理由句なしの 419 は Apache(mod_php) で 500 に化ける。ステータス行ごと送っていること
+check "status line has reason"     "419 Page Expired"               "$(curl $C -s -i -X POST -d 'title=x' $B/notes/new | head -1)"
 check "back() redirects to referer" "Location: http://127.0.0.1:8572/notes/new" "$(curl $C -i -X POST -H 'Referer: http://127.0.0.1:8572/notes/new' -d "_token=$TOKEN&title=&body=b" $B/notes/new)"
 PAGE="$(curl $C $B/notes/new)"
-check "err() shows field error"    "タイトルは必須です"             "$PAGE"
+check "validate() → err() shown"   "タイトルを入力してください。"   "$PAGE"
 check "old() restores input"       '<textarea name="body" rows="6">b<' "$PAGE"
 check "valid POST → redirect /"    "Location: /"                    "$(curl $C -i -X POST -d "_token=$TOKEN&title=First+note&body=hello" $B/notes/new)"
 PAGE="$(curl $C $B/)"
@@ -49,10 +51,23 @@ check "flash shown once"           "を保存しました"                 "$PAG
 check "note listed"                'First note'                     "$PAGE"
 check "flash gone on next request" "0"                              "$(curl $C $B/ | grep -c 'flash success')"
 check "int param: /edit/1"         'value="First note"'             "$(curl $C $B/notes/edit/1)"
+check "Validator chain → back(\$to)" "Location: /notes/edit/1"       "$(curl $C -i -X POST -d "_token=$TOKEN&title=" $B/notes/edit/1)"
+check "chain error shown"          "タイトルを入力してください。"   "$(curl $C $B/notes/edit/1)"
 check "int param: /edit/abc → 404" "404"                            "$(curl -s -o /dev/null -w '%{http_code}' $B/notes/edit/abc)"
 check "findOrFail → 404 + _error view" "Note not found: id=999"    "$(curl -s $B/notes/edit/999)"
 check "Paginated → JSON envelope"  '"total":1'                      "$(curl -s $B/api/notes)"
 check "echo-style page works"      "<h1>About</h1>"                 "$(curl -s $B/about)"
+# 余りセグメントは引数で使い切らなければ 404（未知 URL が pages/index.php で 200 にならない）
+check "unknown URL → 404 (not index)" "404"                         "$(curl -s -o /dev/null -w '%{http_code}' $B/foo/bar)"
+check "extra segment → 404"        "404"                            "$(curl -s -o /dev/null -w '%{http_code}' $B/notes/edit/1/x)"
+check "echo page + extra → 404"    "404"                            "$(curl -s -o /dev/null -w '%{http_code}' $B/about/x)"
+P="$ROOT/examples/notes/pages"; mkdir -p "$P/zz_dir"
+printf '<?php\nreturn fn(string ...$rest) => implode(",", $rest);\n' > "$P/zz_rest.php"
+printf '<?php\nreturn fn() => "dir index";\n' > "$P/zz_dir/index.php"
+check "variadic takes the rest"    "a,b"                            "$(curl -s $B/zz_rest/a/b)"
+check "dir/index.php exact match"  "dir index"                      "$(curl -s $B/zz_dir)"
+check "dir/index.php no remainder" "404"                            "$(curl -s -o /dev/null -w '%{http_code}' $B/zz_dir/1)"
+rm -rf "$P/zz_rest.php" "$P/zz_dir"
 # デバッグパネル: タブ（CSS のみ）、解決したページ、描画したビュー、秘密っぽい値のマスク
 PAGE="$(curl $C "$B/notes/new?password=hunter2&q=a")"
 check "panel: page file shown"     "page pages/notes/new.php"       "$PAGE"
@@ -139,6 +154,30 @@ while IFS= read -r line; do
     "FAIL "*) fail "${line#FAIL }";;
   esac
 done <<< "$DOUT"
+
+# バリデータ・old() の既定値・abs_url()
+echo
+echo "== washi Validator"
+VOUT="$(cd "$ROOT" && php tests/validator.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+    *)        fail "validator.php: $line";;
+  esac
+done <<< "$VOUT"
+
+# lib/ の自動読み込み: サブフォルダ・名前空間なし/つき・重複・本番キャッシュ
+echo
+echo "== washi LibAutoloader"
+LOUT="$(cd "$ROOT" && php tests/lib_autoload.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+    *)        fail "lib_autoload.php: $line";;
+  esac
+done <<< "$LOUT"
 
 # .env.defaults → .env → 実環境変数 の重ね合わせ
 echo

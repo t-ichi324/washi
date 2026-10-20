@@ -16,6 +16,19 @@ use Washi\Db\Paginated;
  */
 class Response
 {
+    /** 理由句。ステータス行に必ず付けて送る（Apache は理由句の無い未登録コード、例えば 419 を 500 に置き換えるため） */
+    private const REASONS = [
+        200 => 'OK', 201 => 'Created', 202 => 'Accepted', 204 => 'No Content', 206 => 'Partial Content',
+        301 => 'Moved Permanently', 302 => 'Found', 303 => 'See Other', 304 => 'Not Modified',
+        307 => 'Temporary Redirect', 308 => 'Permanent Redirect',
+        400 => 'Bad Request', 401 => 'Unauthorized', 403 => 'Forbidden', 404 => 'Not Found',
+        405 => 'Method Not Allowed', 406 => 'Not Acceptable', 409 => 'Conflict', 410 => 'Gone',
+        413 => 'Content Too Large', 415 => 'Unsupported Media Type', 419 => 'Page Expired',
+        422 => 'Unprocessable Content', 429 => 'Too Many Requests',
+        500 => 'Internal Server Error', 501 => 'Not Implemented', 502 => 'Bad Gateway',
+        503 => 'Service Unavailable', 504 => 'Gateway Timeout',
+    ];
+
     /** @var array<string,string> */
     private array $headers = [];
     private ?string $filePath = null;
@@ -118,12 +131,20 @@ class Response
     public function getHeader(string $name): ?string { return $this->headers[$name] ?? null; }
     public function isRedirect(): bool { return isset($this->headers['Location']); }
 
+    /** Reason phrase for a status code ('' when unknown) */
+    public static function reason(int $status): string
+    {
+        return self::REASONS[$status] ?? '';
+    }
+
     /** Write status, headers and body to the SAPI. */
     public function send(): void
     {
         Session::close();
         if (!headers_sent()) {
-            http_response_code($this->status);
+            // http_response_code() は番号しか渡さないため、mod_php は未登録の 419 を 500 に変える。行ごと送る
+            $protocol = preg_match('#^HTTP/\d(\.\d)?$#', (string)($_SERVER['SERVER_PROTOCOL'] ?? '')) ? $_SERVER['SERVER_PROTOCOL'] : 'HTTP/1.1';
+            header("$protocol {$this->status} " . (self::reason($this->status) ?: 'Status'), true, $this->status);
             foreach ($this->headers as $k => $v) header("$k: $v");
             foreach ($this->pendingCookies as [$n, $v, $o]) setcookie($n, $v, $o);
         }

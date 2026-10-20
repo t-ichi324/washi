@@ -18,6 +18,7 @@ use Washi\Middleware\VerifyCsrf;
  * Action arguments are resolved from the route params: by name when the closure parameter name matches a
  * `{name}` placeholder, otherwise positionally. `int`/`float` params are validated (404 on mismatch);
  * a `Request` typed parameter receives the current request.
+ * pages/ の余りセグメント（list で渡る）は引数で使い切らなければ 404。任意個を受けるなら `fn(string ...$rest)`。
  */
 class Handler
 {
@@ -86,6 +87,10 @@ class Handler
             $typeName = $type instanceof \ReflectionNamedType ? $type->getName() : null;
             if ($typeName === Request::class) { $args[] = $request; continue; }
 
+            if ($p->isVariadic()) {
+                while ($pos < count($positional)) $args[] = self::cast($positional[$pos++], $typeName);
+                break;
+            }
             if (array_key_exists($p->getName(), $params) && !is_int($p->getName())) {
                 $val = $params[$p->getName()];
             } elseif ($pos < count($positional)) {
@@ -99,18 +104,25 @@ class Handler
             } else {
                 throw new HttpException(404);
             }
-
-            if ($typeName === 'int') {
-                if (!is_int($val) && !ctype_digit(ltrim((string)$val, '-'))) throw new HttpException(404);
-                $val = (int)$val;
-            } elseif ($typeName === 'float') {
-                if (!is_numeric($val)) throw new HttpException(404);
-                $val = (float)$val;
-            } elseif ($typeName === 'bool') {
-                $val = Cast::asBool($val);
-            }
-            $args[] = $val;
+            $args[] = self::cast($val, $typeName);
         }
+        // pages/ の余りセグメント（list）が残った = その URL を受けるページではない。/foo/bar が pages/index.php で 200 にならない
+        // 明示ルートの {name} は string キーなので対象外（パターンに書いた時点で受けると宣言している）
+        if ($params && array_is_list($params) && $pos < count($positional)) throw new HttpException(404);
         return $ref->invokeArgs($args);
+    }
+
+    private static function cast(mixed $val, ?string $typeName): mixed
+    {
+        if ($typeName === 'int') {
+            if (!is_int($val) && !ctype_digit(ltrim((string)$val, '-'))) throw new HttpException(404);
+            return (int)$val;
+        }
+        if ($typeName === 'float') {
+            if (!is_numeric($val)) throw new HttpException(404);
+            return (float)$val;
+        }
+        if ($typeName === 'bool') return Cast::asBool($val);
+        return $val;
     }
 }

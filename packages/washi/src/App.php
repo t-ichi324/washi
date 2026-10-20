@@ -41,6 +41,7 @@ class App
     private ?Request $request = null;
     private array $queries = [];
     private float $startedAt;
+    private LibAutoloader $libAutoloader;
 
     public function __construct(string $root, array $config = [])
     {
@@ -67,6 +68,7 @@ class App
             'csrf_token'     => '_token',
             'log'            => Env::get('LOG_TARGET', 'storage'),   // 'stderr' | 'storage' | absolute dir
             'trusted_proxies'=> Env::get('TRUSTED_PROXIES', ''),
+            'url'            => Env::get('APP_URL', ''),     // 外に出す絶対 URL の起点（https://example.com/app）。空ならリクエストの Host から作る
             'security_headers' => true,
         ];
 
@@ -87,7 +89,10 @@ class App
         Session::configure($this->config['session_name']);
         Security::configure($this->config['csrf_token']);
         View::configure($this->path($this->config['views']), $this->config['layout']);
-        $this->registerLibAutoload($this->path($this->config['lib']));
+        // lib/ はサブフォルダも探す（名前空間なしでも可）。本番は対応表を storage/cache にキャッシュ
+        $this->libAutoloader = new LibAutoloader($this->path($this->config['lib']),
+            $this->config['debug'] ? null : $this->path($this->config['storage'], 'cache', 'lib-classmap.php'));
+        $this->libAutoloader->register();
         $this->wireDatabase();
 
         // 例外を Response に変換するのは handle() だが、PHP エラーは例外化しておく
@@ -125,6 +130,24 @@ class App
     {
         if (preg_match('#^[a-z][a-z0-9+.-]*://#i', $path) || str_starts_with($path, '//')) return $path;
         $base = $this->request?->basePath ?? '';
+        $url = $base . '/' . ltrim($path, '/');
+        if ($query) $url .= (str_contains($url, '?') ? '&' : '?') . http_build_query($query);
+        return $url;
+    }
+
+    /**
+     * Absolute URL (scheme + host) for mail bodies, QR codes, OAuth callbacks…
+     * APP_URL があればそれを起点にする（basePath も含めて書く）。無ければ現在のリクエストの Host から作るが、
+     * Host ヘッダは送信側が自由に書けるので、本番でメールに載せるなら APP_URL を設定すること。
+     */
+    public function absoluteUrl(string $path = '/', array $query = []): string
+    {
+        if (preg_match('#^[a-z][a-z0-9+.-]*://#i', $path) || str_starts_with($path, '//')) return $path;
+        $base = rtrim((string)$this->config['url'], '/');
+        if ($base === '') {
+            $r = $this->request();
+            return ($r->isHttps() ? 'https' : 'http') . '://' . $r->host() . $this->url($path, $query);
+        }
         $url = $base . '/' . ltrim($path, '/');
         if ($query) $url .= (str_contains($url, '?') ? '&' : '?') . http_build_query($query);
         return $url;
@@ -245,6 +268,12 @@ class App
         if ($request->isAjax() || $request->header('HX-Request') !== null) return false;
         $mode = $request->header('Sec-Fetch-Mode');
         return $mode === null || $mode === 'navigate';
+    }
+
+    /** lib/ の「クラス名 → ファイル」対応表のキャッシュを消す（通常は自動で作り直すので不要） */
+    public function clearClassMap(): void
+    {
+        $this->libAutoloader->clear();
     }
 
     /** Run pending SQL migrations from the configured directory. @return string[] executed files */
@@ -395,6 +424,7 @@ class App
 
     private function errorResponse(\Throwable $e, Request $request): Response
     {
+        if ($e instanceof ValidationException) return $e->toResponse($request);
         $status = match (true) {
             $e instanceof HttpException     => $e->status,
             $e instanceof NotFoundException => 404,
@@ -423,21 +453,6 @@ class App
     }
 
     // ── wiring ───────────────────────────────────────────────────────────
-
-    private function registerLibAutoload(string $libDir): void
-    {
-        if (!is_dir($libDir)) return;
-        spl_autoload_register(static function (string $class) use ($libDir): void {
-            $rel = str_replace('\\', '/', $class);
-            $candidates = ["$libDir/$rel.php"];
-            // 先頭の名前空間セグメントを剥がしたパスも試す（App\Models\User → lib/Models/User.php）
-            if (($pos = strpos($rel, '/')) !== false) $candidates[] = "$libDir/" . substr($rel, $pos + 1) . '.php';
-            $candidates[] = "$libDir/" . basename($rel) . '.php';
-            foreach ($candidates as $f) {
-                if (is_file($f)) { require_once $f; return; }
-            }
-        });
-    }
 
     private function wireDatabase(): void
     {

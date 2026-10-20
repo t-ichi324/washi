@@ -42,15 +42,16 @@
 | 領域 | できること | 担当 |
 |---|---|---|
 | ルーティング | `pages/` ファイル解決（最長一致、HTTP メソッド別ファイル `edit.post.php`）、明示ルート `$app->get('/x/{id}', fn)`、`{id:\d+}` 正規表現、405 判定 | `App` |
-| ハンドラ | クロージャ引数の自動解決（URL パラメータを名前→位置で束縛、`int`/`float` 検証、`Request` 型注入） | `Handler` |
+| ハンドラ | クロージャ引数の自動解決（URL パラメータを名前→位置で束縛、`int`/`float` 検証、`Request` 型注入、`...$rest` で残り全部）。pages の余りセグメントを使い切らなければ 404 | `Handler` |
 | ミドルウェア | `fn(Request, Closure $next)` 形式（`$next()` は常に `Response` を返す）。グローバル `$app->use()`、フォルダ単位 `pages/admin/_access.php`、ハンドラ単位 `->use()`、PHP Attribute `#[RequireAuth]` も可 | `Handler`, `App`, `Middleware/*` |
 | 組み込みミドルウェア | `->auth()` 未ログインをログイン画面へ、`->guest()`、`->roles('admin')`、`->csrf()` | `Middleware/*` |
-| リクエスト | GET + POST + JSON body を統合した型付き取得 `str/int/float/bool/arr/all/only/file`、`wantsJson`、`isAjax`、`_method` オーバーライド、信頼プロキシ考慮の `ip()` | `Request` |
-| レスポンス | `html/json/redirect/text/file/download/empty`、`->status()->header()->cookie()`。戻り値の自動変換 | `Response`, `App::normalize` |
+| リクエスト | GET + POST + JSON body を統合した型付き取得 `str/int/float/bool/arr/all/only/file`、`validate([...])`、`wantsJson`、`isAjax`、`_method` オーバーライド、信頼プロキシ考慮の `ip()` | `Request` |
+| レスポンス | `html/json/redirect/text/file/download/empty`、`->status()->header()->cookie()`。戻り値の自動変換。ステータス行は理由句付きで送る（419 などが Apache で 500 に化けない） | `Response`, `App::normalize` |
 | ビュー | 素の PHP、`extract` された変数、レイアウト自動包み（既定は `View::layout()` で変更可）、`partial()`、`View::share()`、セクション `View::start()/stop()/section()` | `View` |
 | セッション | 遅延開始、HttpOnly/SameSite=Lax/Secure 自動、flash（1 回だけ読める値） | `Session` |
-| 認証 | `Auth::login($user)` に任意のオブジェクト/配列、`check/user/id/roles/hasRole`、Remember-me（opt-in） | `Auth` |
+| 認証 | `Auth::login($user)` に任意のオブジェクト/配列、`check/user/id/roles/hasRole`、Remember-me（opt-in、§5 のレシピ。cookie は basePath 限定・HTTPS なら Secure） | `Auth` |
 | セキュリティ | CSRF トークン（セッション単位、`csrf_field()`、ヘッダ `X-CSRF-TOKEN` も可）、`password_hash` ラッパ、既定のセキュリティヘッダ、pages のパストラバーサル防止、外部 URL への `url()` 素通し防止なし（注: `redirect()` は与えた URL をそのまま使う） | `Security`, `App` |
+| バリデーション | `$r->validate(['email' => 'required\|email'])`（失敗で back() 相当、JSON なら 422）と `Validator::from($r)->rule('email', 'メール')->required()->email()`（チェーン）。判定は共通。ルール: required email url numeric integer date confirmed min max minValue maxValue between regex in + `with(fn)`。日本語文言、`Validator::messages()` で差し替え | `Validator`, `FieldRules`, `ValidationException` |
 | フォーム補助 | `back($errors)` でエラーと入力値を flash → `err()` `old()` `has_err()` で再表示 | helpers |
 | DB | PDO クエリビルダ（where/join/rel/relMany/page/upsert/chunk など）、型付き `Entity`（find/where/save/delete、dirty tracking、リレーション格納）、`Paginated`、SQL ファイルマイグレーション、SQLite/MySQL/PostgreSQL、ネストトランザクション、クエリ観測フック | `washi/db` |
 | エラー処理 | `abort(404)`、`HttpException`、`Db\NotFoundException`→404、`views/_error.{status}.php`→`_error.php`→組み込み画面、`Accept: application/json` なら JSON、デバッグ時はコードプレビュー付き | `App`, `Debug` |
@@ -61,7 +62,7 @@
 
 ### 提供していないもの（意図的）
 テンプレートエンジン（素の PHP で足りる）、DI コンテナ、ORM のリレーション定義 DSL（`rel()/relMany()` の Eager Load のみ）、
-バリデータ（未実装、§9 参照）、キュー、メール、キャッシュ、ファイルストレージ抽象、CLI ツール（未実装）。
+キュー、メール、キャッシュ、ファイルストレージ抽象、CLI ツール（未実装）。
 
 ---
 
@@ -82,15 +83,27 @@ myapp/
 │   ├── _layout.php         $content と $title を受ける。`_` 始まりは pages から到達不可
 │   ├── _error.php          $status $message $exception を受ける（任意）
 │   └── notes/{index,form}.php
-├── lib/                    ← 任意。クラス名 = ファイル名で自動ロード（名前空間は先頭セグメントを剥がして探す）
+├── lib/                    ← 任意。クラス名 = ファイル名で自動ロード。サブフォルダも探す（下の「lib/ の規則」）
 │   └── Note.php            class Note extends Washi\Db\Entity { public ?int $id = null; public string $title = ''; }
 ├── db/migrations/*.sql     ← 名前順に 1 回だけ実行。DB_AUTO_MIGRATE=true か $app->migrate()
-├── storage/                ← app.db（既定 SQLite）、log/
+├── storage/                ← app.db（既定 SQLite）、log/、cache/（本番の lib/ 対応表）
 ├── .env.defaults           ← 任意・コミットする既定値（秘密は書かない）
 └── .env                    ← 任意・環境ごとの上書き（gitignore）。APP_DEBUG, DB_* など。どちらも無くても動く
 ```
 
 **必須なのは `public/index.php` だけ。** 他のフォルダは「存在すれば使われる」。名前は `new App($root, ['pages' => 'src/pages'])` のように変更可。
+
+### lib/ の規則（`LibAutoloader`）
+```
+lib/Models/Shisetsu.php       class Shisetsu             名前空間なし → lib/ 配下をファイル名で再帰的に探す
+lib/Services/Mail/Mailer.php  class Mailer               深さも自由
+lib/Models/Note.php           namespace App\Models;      名前空間つき → lib/App/Models/Note.php、先頭を剥がした lib/Models/Note.php を先に見て、
+lib/Vendor/Acme/Client.php    namespace Acme;               無ければファイル名で探す
+```
+- **フォルダ名は自由**。役割別（Models / Repositories / Services …）でも機能別でもよい。1 ファイル 1 クラス、ファイル名 = クラス名
+- **名前空間なしのクラス名は lib/ 全体で重複させない**。フォルダが違っても同名は置けず、読み込んだ時点で LogicException（黙ってどちらかを読む事故を防ぐ）
+- 同名が必要になったら、そのクラスから名前空間を付ける。名前空間つきとなしは同じ lib/ に共存できる
+- `.` 始まりのフォルダは探さない。本番（`APP_DEBUG=false`）は対応表を `storage/cache/lib-classmap.php` にキャッシュし、載っていないクラスや消えたパスに当たると 1 リクエスト 1 回だけ作り直す（ファイルを足す・動かすだけなら手作業は不要）。消すなら `$app->clearClassMap()` かファイルを削除。デバッグ時はキャッシュしない
 
 ---
 
@@ -116,6 +129,8 @@ pages/a/b.{m}.php   → pages/a/b.php                                           
 pages/a.{m}.php     → pages/a.php                                                          params = ["b","c"]
 pages/index.{m}.php → pages/index.php                                                      params = ["a","b","c"]
 ```
+- **ディレクトリの `index.php` は URL と完全一致したときだけ**使われ、余りセグメントを受けない。`/admin/kengaku/1` を受けたいなら `pages/admin/kengaku/index.php` ではなく `pages/admin/kengaku.php` に置く
+- **余りセグメントはハンドラの引数で使い切らなければ 404**。`/foo/bar` が `pages/index.php`（`fn()`）に落ちても 200 にはならない。echo 型・即値を返すページは引数を持たないので、余りがあれば常に 404（ページのコードは include されるが出力は捨てる）。任意個を受けるなら `fn(string ...$rest)`
 ページファイルの `return` の解釈（`App::loadPage`）:
 
 | return したもの | 扱い |
@@ -139,8 +154,9 @@ pages/index.{m}.php → pages/index.php                                         
 ### アクション引数の解決（`Handler::invoke`）
 1. `Request` 型の引数 → 現在のリクエスト
 2. 明示ルートの `{name}` と同名の引数 → 名前で束縛
-3. それ以外 → 位置順（pages の余りセグメントはここに入る）
+3. それ以外 → 位置順（pages の余りセグメントはここに入る）。可変長引数 `...$rest` は残り全部を受ける
 4. `int`/`float` は形式検証し、不正なら 404。`bool` は Cast。デフォルト値と nullable は許容。足りなければ 404
+5. pages の余りセグメントが引数に入りきらずに残れば 404（明示ルートの `{name}` は対象外）
 
 ### 戻り値の正規化（`App::normalize`）
 | 戻り値 | 応答 |
@@ -163,16 +179,32 @@ pages/index.{m}.php → pages/index.php                                         
 return fn(int $year, int $month = 1) => view('reports/monthly', ['title' => "{$year}年{$month}月", 'rows' => Sales::where('ym', "$year-$month")->all()]);
 ```
 
-**ログイン必須 + POST 保存**
+**ログイン必須 + POST 保存（バリデーション）**
 ```php
 // pages/items/save.post.php
 return page()->auth()->csrf()->then(function (Washi\Request $r) {
-    if ($r->str('name') === '') return back(['name' => '名前は必須です']);
-    Item::create($r->only(['name', 'price']));
+    // 失敗したらエラーと入力値を flash して Referer へ戻る（JSON クライアントには 422 {error, errors}）。if は要らない
+    $data = $r->validate([
+        'name'  => 'required|max:100',
+        'price' => 'required|integer|minValue:0',
+        'code'  => ['regex:/^(A|B)[0-9]{3}$/', fn($v) => !Item::first('code', $v) ?: ':fieldは使用済みです'],  // | を含むなら配列で
+    ], ['name' => '品名', 'price' => '価格', 'code' => 'コード']);
+    Item::create($data);                       // ルールを書いたキーのうち送られたものだけ（trim 済み）
     flash('success', '保存しました');
     return redirect('/items');
 });
+// ビュー: <input name="name" value="<?= old('name', $item->name) ?>"><?= err('name') ?>
 ```
+戻り先を選ぶ・DB を見てからエラーを足すなど手で制御するときはチェーン形式（判定は同じ）:
+```php
+$v = Washi\Validator::from($r);
+$v->rule('email', 'メールアドレス')->required()->email()->max(255);
+$v->rule('password', 'パスワード')->required()->min(8)->confirmed();   // password_confirmation と一致
+if ($v->validate() && User::first('email', $v->get('email'))) $v->addError('登録済みです', 'email');
+if ($v->hasError()) return $v->back('/signup');      // addError($msg) をキー無しで呼ぶと flash('error') になる
+```
+- `required` と `confirmed` 以外のルール、および `with(fn)` は**値が空なら検査しない**。必須なら `required` を併記する。確認用の一致は `with()` ではなく `confirmed` を使う（空でも検査する）
+- 文言は `Validator::messages(['required' => ':fieldは必須です'])` でアプリ全体を差し替え（`public/index.php` で 1 回）、個別には各ルールの最後の引数
 
 **ログイン画面**
 ```php
@@ -187,6 +219,15 @@ return page()->guest()->csrf()->then(function (Washi\Request $r) {
 });
 // pages/logout.post.php
 return page()->csrf()->then(function () { Washi\Auth::logout(); return redirect('/login'); });
+```
+**ログイン状態を保持する（Remember-me）**: トークンの保存先はアプリが持つ。ハッシュで保存し、cookie の生値と照合する
+```php
+// public/index.php（new App の後）
+Washi\Auth::onLogin(function ($u, ?string $token) {         // login($u, remember: true) のとき $token が来る
+    if ($token !== null) Washi\Db\Db::table('users')->where('id', $u->id)->update(['remember_hash' => hash('sha256', $token)]);
+});
+Washi\Auth::remember(fn(string $token) => User::first('remember_hash', hash('sha256', $token)));  // null なら cookie を消す
+// pages/login.post.php:  Washi\Auth::login($u, remember: $r->bool('remember'));
 ```
 
 **JSON API**
@@ -251,6 +292,8 @@ Washi\Db\Db::transaction(fn() => ...);
 
 **マイグレーション**: `db/migrations/002_add_price.sql` を置く → `.env` に `DB_AUTO_MIGRATE=true` か `php -r '(new Washi\App(__DIR__))->migrate();'`。
 
+**メールや QR コードに載せる URL**: `abs_url('/reserve/confirm', ['t' => $token])` は `https://host/...` を返す。`.env` に `APP_URL=https://example.jp/app`（basePath まで）を書くとそれを起点にする。未設定だとリクエストの Host ヘッダから作るが、Host は送信側が書き換えられるので本番では必ず設定する。
+
 **本番配置**: DocumentRoot を `public/` に。Apache は `.htaccess` で `FallbackResource /index.php`、nginx は `try_files $uri /index.php?$query_string`。サブディレクトリでも `url()` がプレフィックスを付ける。`APP_DEBUG=false`、`LOG_TARGET=stderr`（コンテナ）。
 
 ---
@@ -271,9 +314,10 @@ Washi\Db\Db::transaction(fn() => ...);
 | `request()` / `input($k, $d=null)` | | 現在の Request / 統合入力 |
 | `user()` | object\|array\|null | `Auth::user()` |
 | `flash($type, $text)` / `flashes()` | | 次のリクエストで 1 回だけ表示するメッセージ |
-| `old($k, $d='')` / `err($k)` / `has_err($k)` | string | フォーム再表示（エスケープ済み） |
+| `old($k, $d='')` / `err($k)` / `has_err($k)` | string | フォーム再表示（エスケープ済み）。`old('note', $row->note)` のように `$d` は null・数値もそのまま渡せる |
 | `csrf_field()` / `csrf_token()` | string | `<input type=hidden name=_token>` |
 | `url($path, $query=[])` | string | サブディレクトリのプレフィックス付与。絶対 URL は素通し |
+| `abs_url($path, $query=[])` | string | スキーム + ホスト付き（`APP_URL` 優先）。メール本文・QR など外に出す URL 用 |
 | `h($v)` | string | HTML エスケープ（ENT_QUOTES, UTF-8） |
 | `checked/selected/disabled($bool)` / `options($list, $sel)` | string | HTML 属性の出力 |
 | `env($k, $d)` / `app()` | | |
@@ -294,8 +338,9 @@ Washi\Db\Db::transaction(fn() => ...);
 | `layout` | _layout | | `view()` の既定レイアウト |
 | `login_page` | /login | `APP_LOGIN_PAGE` | `->auth()` の遷移先 |
 | `session_name` | washi_sid | `SESSION_NAME` | |
-| `csrf_token` | _token | | フィールド名 |
+| `csrf_token` | _token | | フィールド名。環境で変わらない値なので配列に書いてよい（既存フォームの hidden 名に合わせるなど） |
 | `log` | storage | `LOG_TARGET` | `storage` → storage/log/日付.log、`stderr`、または絶対パス |
+| `url` | '' | `APP_URL` | `abs_url()` の起点（`https://example.jp/app`）。空ならリクエストの Host から |
 | `trusted_proxies` | '' | `TRUSTED_PROXIES` | `Request::ip()` で X-Forwarded-For を信頼する送信元（`*` 可） |
 | `security_headers` | true | | X-Frame-Options / nosniff / Referrer-Policy |
 
@@ -320,7 +365,8 @@ washi/
 ├── packages/
 │   ├── support/  washi/support   Washi\Collection（配列ラッパ）, Washi\Cast（安全な型変換）          依存なし
 │   ├── db/       washi/db        Washi\Db\{Db, Connection, Query, Entity, Paginated, Migration, NotFoundException}   support のみ
-│   └── washi/    washi/washi     Washi\{App, Handler, Request, Response, View, Session, Auth, Security, Env, Log, Debug, HttpException}
+│   └── washi/    washi/washi     Washi\{App, Handler, Request, Response, View, Session, Auth, Security, Env, Log, Debug, HttpException,
+│                                       Validator, FieldRules, ValidationException, LibAutoloader}
 │                                 Washi\Middleware\{Middleware, RequireAuth, RequireGuest, RequireRole, VerifyCsrf}   inc/helpers.php
 ├── examples/hello/index.php     1 ファイル版（明示ルートのみ、DB 自動 SQLite）
 ├── examples/notes/              pages + views + lib/Note.php + db/migrations の CRUD
@@ -328,7 +374,9 @@ washi/
 ├── tests/query_groups.php       where(fn) のグループ条件（プレースホルダ衝突・入れ子）を Query 直叩きで検証
 ├── tests/request_basepath.php   サブディレクトリ設置（+ public/ への内部転送）時のパス解決
 ├── tests/env_layers.php         .env.defaults / .env / 実環境変数 / 先行 Env::load の優先順位
-└── tests/debug_panel.php        デバッグパネルの注入条件（完全な文書のみ・部分ロード除外）と明示ルートの記録
+├── tests/debug_panel.php        デバッグパネルの注入条件（完全な文書のみ・部分ロード除外）と明示ルートの記録
+├── tests/validator.php          バリデータ（両方の入口・各ルール・422/back）、old() の既定値、abs_url()
+└── tests/lib_autoload.php       lib/ の自動読み込み（サブフォルダ・名前空間なし/つき・重複・本番キャッシュ）
 ```
 
 ### 依存の向き（守ること）
@@ -345,18 +393,19 @@ DB 層がログやトレースを必要とする場合は `Db::listen(fn($sql, $
 | `Session.php` | `$_SESSION` の遅延開始と flash（`_flash` キー配下、1 リクエスト後に消える） |
 | `Auth.php` / `Security.php` | セッションキー `_auth` / `_csrf` |
 | `Debug.php` | 組み込みエラー HTML（コードプレビュー）とパネル。アプリの views には依存しない。パネルの材料は `Debug::record($kind, $row)` で App/View から積む（debug + debug_panel 時以外は何もしない）。タブは CSS のみ（JS なし、アプリの CSP で壊れない） |
+| `LibAutoloader.php` | lib/ の自動読み込み（App が登録）。名前空間つきはパス、それ以外はファイル名の対応表で探す。本番は storage/cache にキャッシュ |
+| `Validator.php` / `FieldRules.php` | 入力・エラー・back() を持つ Validator と、1 フィールドのルールと判定（FieldRules::check が唯一の判定箇所）。`ValidationException` は App が back() / 422 に変える |
 | `Middleware/*` | それぞれ 1 クラス 1 責務。`#[\Attribute]` 付きなので closure に付けられる |
 
 ---
 
 ## 9. 未実装・次の候補（優先順）
 
-1. **バリデーション**: `$r->validate(['title' => 'required|max:100'])` が失敗時に `back($errors)` 相当を投げる最小実装
-2. **CLI `bin/washi`**: `serve`、`make:page`、`make:entity`（DB スキーマから Entity 生成）、`migrate`
-3. **`Entity::sync()`**: 型付きプロパティから SQLite の CREATE TABLE を生成（試作用）
-4. **`RequireRole` の判定フック**: ロール文字列以外の権限モデル（`can()` 相当）を差し込めるようにする
-5. **Packagist 公開**: `washi/support` `washi/db` `washi/washi`（ベンダー名は 2026-09 時点で空き）
-6. `Response` のストリーミング、Cookie API の整理
+1. **CLI `bin/washi`**: `serve`、`make:page`、`make:entity`（DB スキーマから Entity 生成）、`migrate`
+2. **`Entity::sync()`**: 型付きプロパティから SQLite の CREATE TABLE を生成（試作用）
+3. **`RequireRole` の判定フック**: ロール文字列以外の権限モデル（`can()` 相当）を差し込めるようにする
+4. **Packagist 公開**: `washi/support` `washi/db` `washi/washi`（ベンダー名は 2026-09 時点で空き）
+5. `Response` のストリーミング、Cookie API の整理
 
 ---
 
@@ -382,7 +431,8 @@ fzr を知らなくても Washi を扱う上で困ることはない。
 ### fzr からの移植状況
 - そのまま: `Db/Query` `Db/Connection` `Db/Paginated` `Db/Migration` `Db/Db`（Logger/Tracer 呼び出しを `Db::listen` に置換）、`Collection`、`DataHelper`→`Cast`、Request の型付き入力、CSRF 方式、エラー画面のコードプレビュー、HTML 属性ヘルパー
 - 形を変えて: `Model`+`Entity`→`Entity` に統合、`Attr\Http\*`→`Middleware\*`、配列ディスクリプタの `Response`→値オブジェクト、`Render`→`View`、`Message`→`flash()`
-- 持ち込まなかった: 規約ルーティングの `Engine`、`Controller`、`Bag`/`Store`、`Config`/`Context`、`Form`/`FormValidator`/`Attr\Field`、Session の cookie/redis ドライバ、`Cache`、`Storage`、`Cookie`、`Url`/`Path`、UA 判定、`ModelGenerator`（CLI 実装時に再移植予定）
+- 形を変えて（後から）: `Form`/`FormValidator` → `Validator` + `FieldRules`（reserv.c-aca 移植時の lib/Form.php が叩き台）
+- 持ち込まなかった: 規約ルーティングの `Engine`、`Controller`、`Bag`/`Store`、`Config`/`Context`、`Attr\Field`、Session の cookie/redis ドライバ、`Cache`、`Storage`、`Cookie`、`Url`/`Path`、UA 判定、`ModelGenerator`（CLI 実装時に再移植予定）
 
 ### 設計判断と理由
 | 判断 | 理由 |
@@ -405,3 +455,8 @@ fzr を知らなくても Washi を扱う上で困ることはない。
 | `basePath` は SCRIPT_NAME 由来だが、剥がせないときは末尾 1 階層を落として再試行する | `.htaccess` で `public/` へ内部転送すると SCRIPT_NAME は `/app/public/index.php`、URL は `/app/...` になり、prefix が一致せず path を剥がせない。結果 basePath が `/app/public` のままになり、全 URL が index に落ちて 404 が出せなくなる。検証は `tests/request_basepath.php` |
 | `App::run()` は `bool` を返し、フロントコントローラは `return $app->run();` と書く | `php -S ... public/index.php` ではルータスクリプトが css・画像まで受け取ってしまい 404 になる。実ファイルなら false を返して組み込みサーバーに配信させる（PHP ファイルは除外し、ソースを晒さない）。戻り値を無視する既存の `$app->run();` もそのまま動く |
 | プレースホルダ名は `count($params)` ではなく単調増加カウンタ `$phSeq`（`where(fn)` の子 Query と参照共有） | `count()` だと子 Query が空の `$params` から採番し直すため、`where('a',1)->where(fn($q) => $q->where('b',2))` で `:w0` が衝突して外側の束縛が上書きされていた（静かに誤った結果を返す）。グループは `compileConditions()` で再帰的に組む（以前は 1 段しか展開できず、入れ子は壊れた SQL になった）。検証は `tests/query_groups.php` |
+| pages の余りセグメントは引数で使い切らなければ 404（設定で切り替えない） | 以前は捨てていたため、存在しない `/foo/bar` が `pages/index.php` で 200 になり、全アプリが `if (request()->segments()) abort(404);` を書いていた（reserv.c-aca 移植で判明）。引数を宣言する = その URL を受けると宣言している、という規則にすれば設定は要らない。任意個は `...$rest`。明示ルートの `{name}` はパターンに書いた時点で受けると宣言しているので対象外。検証は smoke.sh の `extra segment` 他 |
+| ステータス行は `header("HTTP/1.1 419 Page Expired")` と理由句付きで送る | `http_response_code()` は番号しか渡さず、Apache(mod_php) は自分の表に無い 419 を 500 に置き換える（画面は 419 なのにログと監視は 500）。CSRF を 403 に変えるのではなく送り方を直した。組み込みサーバーも `419 Unknown Status Code` だった |
+| バリデータの入口は `$r->validate()`（宣言・例外）と `Validator::from()`（チェーン）の 2 つ、判定は `FieldRules::check` 1 か所 | 宣言は 1 行で済み if も要らない。チェーンは戻り先の指定や DB を見てからのエラー追加など、手で制御したい画面用（fzr の Form と同じ形で移植しやすい）。2 つの判定を持つと挙動がずれるので中身は共通 |
+| `with(fn)` と `required` / `confirmed` 以外のルールは、値が空なら検査しない | 任意項目に「入力されたら形式を検査」を書けるようにするため（Laravel の implicit rule と同じ）。代わりに確認用フィールドの一致は `with()` で書くと空同士で素通りするので、専用の `confirmed` を用意し空でも検査する |
+| lib/ はサブフォルダも探し、名前空間なしのクラスはファイル名で引く。同名は例外 | lib/ が 30 クラスを超えると役割別に分けたくなるが、そのためだけに名前空間を付けると pages/・views/ の全ファイルに use が要る（reserv.c-aca で約 150 ファイル）。フォルダ構成を要求しない方針どおり、分け方はアプリに任せる。同名を先勝ちで読むと、フォルダを足しただけで別のクラスが静かに読まれるので重複は例外にする。対応表は本番だけキャッシュし、ミスや消えたパスで自動的に作り直す（デプロイ手順にキャッシュ削除を増やさない）。検証は `tests/lib_autoload.php` |
