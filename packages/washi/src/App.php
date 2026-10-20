@@ -48,7 +48,9 @@ class App
         $this->root = rtrim(realpath($root) ?: $root, '/\\');
         self::$current = $this;
 
+        // 先に入った値が勝つので優先度の高い順に読む: 実環境変数 > .env（環境ごと） > .env.defaults（コミットする既定値）
         Env::load($this->root . '/.env');
+        Env::load($this->root . '/.env.defaults');
         $this->config = $config + [
             'debug'          => Env::bool('APP_DEBUG', false),
             'debug_panel'    => true,
@@ -209,6 +211,7 @@ class App
     public function handle(Request $request): Response
     {
         $this->request = $request;
+        Debug::enable($this->config['debug'] && $this->config['debug_panel']);   // パネル用の記録をリクエストごとに空にする
         try {
             if ($this->config['auto_migrate']) $this->migrate();
             [$handler, $params] = $this->resolve($request);
@@ -222,12 +225,26 @@ class App
                 if ($response->getHeader($k) === null) $response->header($k, $v);
             }
         }
-        if ($this->isDebug() && $this->config['debug_panel'] && str_starts_with((string)$response->getHeader('Content-Type'), 'text/html')) {
-            $body = $response->getBody();
-            $panel = Debug::panel(microtime(true) - $this->startedAt, $this->queries);
-            $response->body(str_contains($body, '</body>') ? str_replace('</body>', $panel . '</body>', $body) : $body . $panel);
+        if ($this->isDebug() && $this->config['debug_panel'] && str_starts_with((string)$response->getHeader('Content-Type'), 'text/html')
+            && self::isNavigation($request)
+            // 完全な HTML 文書にだけ入れる。断片（部分ロード用）は Sec-Fetch-Mode が来ない http://*.test などでも混ざらない
+            && ($at = strripos($body = $response->getBody(), '</body>')) !== false) {
+            $panel = Debug::panel($request, $response, microtime(true) - $this->startedAt, $this->queries);
+            $response->body(substr_replace($body, $panel, $at, 0));   // 最後の </body> の直前だけ（JS 文字列内の </body> に入れない）
         }
         return $response;
+    }
+
+    /**
+     * ページ遷移（アドレスバー・リンク・フォーム送信・iframe）か。fetch/XHR/htmx の部分ロードに
+     * デバッグパネルを混ぜると、差し込んだ断片の中にパネルが一瞬現れるため注入しない。
+     * Sec-Fetch-Mode はブラウザが自動で付ける（navigate 以外 = スクリプトからの取得）。無い（curl・古いブラウザ）なら遷移扱い。
+     */
+    private static function isNavigation(Request $request): bool
+    {
+        if ($request->isAjax() || $request->header('HX-Request') !== null) return false;
+        $mode = $request->header('Sec-Fetch-Mode');
+        return $mode === null || $mode === 'navigate';
     }
 
     /** Run pending SQL migrations from the configured directory. @return string[] executed files */
@@ -258,10 +275,12 @@ class App
                 continue;
             }
             $params = array_filter($m, 'is_string', ARRAY_FILTER_USE_KEY);
+            Debug::record('route', ['resolved' => 'route ' . implode('|', $route['methods']) . ' ' . $route['pattern'], 'params' => $params]);
             return [$route['handler'], $params];
         }
         [$file, $params, $dirs] = $this->findPage($request);
         $guards = $this->accessGuards($dirs, $request);
+        Debug::record('route', ['resolved' => $file === null ? '(no page)' : 'page ' . $this->relative($file), 'params' => $params]);
         if ($file === null) {
             $miss = $allowed ? new HttpException(405, 'Allowed: ' . implode(', ', array_unique($allowed))) : new HttpException(404);
             if (!$guards) throw $miss;
@@ -323,6 +342,7 @@ class App
         foreach ($dirs as $d) {
             $file = "$d/_access.php";
             if (!is_file($file)) continue;
+            Debug::record('access', ['file' => $this->relative($file)]);
             $ret = (static function () use ($file, $request, $app) { return include $file; })();
             if ($ret instanceof Handler) {
                 if ($ret->hasAction()) throw new \LogicException("{$file} must not call ->then(): it guards a folder, not a page");
@@ -338,6 +358,12 @@ class App
             }
         }
         return $guards;
+    }
+
+    /** root からの相対パス（デバッグ表示用） */
+    private function relative(string $file): string
+    {
+        return str_starts_with($file, $this->root . '/') ? substr($file, strlen($this->root) + 1) : $file;
     }
 
     private function loadPage(string $file, Request $request): Handler

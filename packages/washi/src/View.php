@@ -102,13 +102,16 @@ class View
     private static function capture(string $__file, array $__data): string
     {
         $level = ob_get_level();
+        $t = microtime(true);
         ob_start();
         try {
             (static function () use ($__file, $__data) {
                 extract($__data, EXTR_SKIP);
                 include $__file;
             })();
-            return ob_get_clean();
+            $out = ob_get_clean();
+            Debug::record('views', ['view' => substr($__file, strlen(self::$dir) + 1, -4), 'ms' => round((microtime(true) - $t) * 1000, 2)]);
+            return $out;
         } catch (\Throwable $e) {
             while (ob_get_level() > $level) ob_end_clean();
             throw $e;

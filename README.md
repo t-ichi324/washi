@@ -30,7 +30,7 @@ views/_layout.php         <?= $content ?> を置く
 views/notes/form.php
 lib/Note.php              class Note extends Washi\Db\Entity { public ?int $id = null; public string $title = ''; }
 db/migrations/001.sql
-.env                      APP_DEBUG=true / DB_* （無ければ storage/app.db）
+.env.defaults             既定値（コミット）。.env（gitignore）が上書き。APP_DEBUG / DB_* （無ければ storage/app.db）
 ```
 
 サンプル: [examples/hello](examples/hello/index.php)（1 ファイル）、[examples/notes](examples/notes/)（CRUD 一式）。

@@ -28,7 +28,7 @@ check "JSON body parsed"          '{"a":1,"b":"x"}'                "$(curl -s -X
 check "default SQLite works"      '{"hits":2}'                     "$(curl -s $B/db >/dev/null; curl -s $B/db)"
 check "404 JSON when Accept json" '"status":404'                   "$(curl -s -H 'Accept: application/json' $B/nope)"
 check "405 for wrong method"      "405"                            "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE $B/api/time)"
-check "debug panel injected"      'id="washi-debug"'               "$(curl -s $B/)"
+check "panel: fragment → not injected" "0"                         "$(curl -s $B/ | grep -c washi-debug)"
 check "security headers"          "X-Content-Type-Options: nosniff" "$(curl -s -i $B/)"
 stop 8571
 
@@ -53,6 +53,16 @@ check "int param: /edit/abc → 404" "404"                            "$(curl -s
 check "findOrFail → 404 + _error view" "Note not found: id=999"    "$(curl -s $B/notes/edit/999)"
 check "Paginated → JSON envelope"  '"total":1'                      "$(curl -s $B/api/notes)"
 check "echo-style page works"      "<h1>About</h1>"                 "$(curl -s $B/about)"
+# デバッグパネル: タブ（CSS のみ）、解決したページ、描画したビュー、秘密っぽい値のマスク
+PAGE="$(curl $C "$B/notes/new?password=hunter2&q=a")"
+check "panel: page file shown"     "page pages/notes/new.php"       "$PAGE"
+check "panel: views recorded"      "Views (2)"                      "$PAGE"
+check "panel: secret masked"       "0"                              "$(printf '%s' "$PAGE" | grep -c hunter2)"
+check "panel: session tab"         '<td class="k">_csrf</td><td>***' "$PAGE"
+check "panel: navigate → injected" 'id="washi-debug"'               "$(curl -s -H 'Sec-Fetch-Mode: navigate' $B/)"
+check "panel: fetch() → not injected" "0"                           "$(curl -s -H 'Sec-Fetch-Mode: cors' $B/ | grep -c washi-debug)"
+check "panel: XHR → not injected"   "0"                              "$(curl -s -H 'X-Requested-With: XMLHttpRequest' $B/ | grep -c washi-debug)"
+check "panel: htmx → not injected"  "0"                              "$(curl -s -H 'HX-Request: true' $B/ | grep -c washi-debug)"
 check "_prefixed page not routable" "404"                           "$(curl -s -o /dev/null -w '%{http_code}' $B/_layout)"
 check "path traversal blocked"     "404"                            "$(curl -s -o /dev/null -w '%{http_code}' "$B/..%2F..%2Fetc/passwd")"
 check "delete → list empty"        '"total":0'                      "$(curl $C -X POST -d "_token=$TOKEN" $B/notes/delete/1 >/dev/null; curl -s $B/api/notes)"
@@ -65,6 +75,7 @@ printf '<?php\nreturn function ($r, $next) { $res = $next($r); return $res->head
 printf '<?php\nWashi\\View::layout(false);\nreturn [fn($r, $next) => $next($r)->header("X-Chain", "inner")];\n' > "$P/zz_open/sub/_access.php"
 printf '<?php\nreturn fn() => view("zz_bare");\n' > "$P/zz_open/sub/page.php"
 printf '<?php\nreturn fn() => ["a" => 1];\n' > "$P/zz_open/data.php"
+printf '<?php\nreturn "<html><body>doc</body></html>";\n' > "$P/zz_open/doc.php"
 printf '<p>bare</p>\n' > "$ROOT/examples/notes/views/zz_bare.php"
 RES="$(curl -s -i $B/zz_locked/secret)"
 check "_access: guard → login"      "Location: /login"               "$RES"
@@ -77,6 +88,7 @@ RES="$(curl -s -i $B/zz_open/sub/page)"
 check "_access: nested outer→inner" "X-Chain: outer>inner"           "$RES"
 check "_access: View::layout(false)" "0"                             "$(printf '%s' "$RES" | grep -c '<html')"
 check "_access: array → JSON in MW" '{"a":1}'                        "$(curl -s $B/zz_open/data)"
+check "panel: _access.php listed"  "pages/zz_open/_access.php"      "$(curl -s $B/zz_open/doc)"
 check "_access: not applied outside" "0"                             "$(curl -s -i $B/about | grep -c 'X-Chain')"
 rm -rf "$P/zz_locked" "$P/zz_open" "$ROOT/examples/notes/views/zz_bare.php"
 
@@ -116,5 +128,27 @@ while IFS= read -r line; do
     "FAIL "*) fail "${line#FAIL }";;
   esac
 done <<< "$ROUT"
+
+# デバッグパネルの注入条件と明示ルートの記録（App::handle を直接呼ぶ）
+echo
+echo "== washi Debug: パネル"
+DOUT="$(cd "$ROOT" && php tests/debug_panel.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+  esac
+done <<< "$DOUT"
+
+# .env.defaults → .env → 実環境変数 の重ね合わせ
+echo
+echo "== washi Env: .env.defaults"
+EOUT="$(cd "$ROOT" && php tests/env_layers.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+  esac
+done <<< "$EOUT"
 
 echo; echo "passed: $PASS  failed: $FAIL"; rm -rf "$TMP"; [ "$FAIL" -eq 0 ]

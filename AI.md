@@ -54,8 +54,8 @@
 | フォーム補助 | `back($errors)` でエラーと入力値を flash → `err()` `old()` `has_err()` で再表示 | helpers |
 | DB | PDO クエリビルダ（where/join/rel/relMany/page/upsert/chunk など）、型付き `Entity`（find/where/save/delete、dirty tracking、リレーション格納）、`Paginated`、SQL ファイルマイグレーション、SQLite/MySQL/PostgreSQL、ネストトランザクション、クエリ観測フック | `washi/db` |
 | エラー処理 | `abort(404)`、`HttpException`、`Db\NotFoundException`→404、`views/_error.{status}.php`→`_error.php`→組み込み画面、`Accept: application/json` なら JSON、デバッグ時はコードプレビュー付き | `App`, `Debug` |
-| デバッグ | `APP_DEBUG=true` で HTML 応答の末尾に処理時間・メモリ・SQL 一覧のパネルを注入 | `Debug` |
-| 設定 | `.env`（実環境変数が優先）+ `new App($root, [...])` の配列。ini などは無い | `Env`, `App` |
+| デバッグ | `APP_DEBUG=true` で HTML 応答の末尾にパネルを注入（ページ遷移で、かつ `</body>` を含む完全な HTML 文書のときだけ、最後の `</body>` の直前に。fetch/XHR/htmx の部分ロードや断片には入れない＝`Sec-Fetch-Mode`・`X-Requested-With`・`HX-Request` と文書構造で判定。`Sec-Fetch-*` は HTTPS と localhost にしか送られないため構造でも判定する）。部分ロードの中身はパネルの対象外。要約行（処理時間・メモリ・ステータス・SQL 数）＋タブ: Route（解決したページ/ルート・params・通った `_access.php`・応答ヘッダ）/ Request / Views（描画テンプレートと時間）/ Queries（同一 SQL の繰り返しを ×N 表示＝N+1 の疑い）/ Session。password・token・_csrf・cookie などは `***` | `Debug` |
+| 設定 | `.env.defaults`（コミットする既定値）を `.env`（環境ごと）が上書き、実環境変数が最優先 + `new App($root, [...])` の配列。ini などは無い | `Env`, `App` |
 | ログ | 日別ファイル（`storage/log/`）または stderr。`Log::exception()` は 1 行を保ったまま ctx JSON にスタックトレースと `previous` 連鎖を記録（深さは `Log::traceLimit()`、0 で無効） | `Log` |
 | 配置 | サブディレクトリ設置（`basePath` 自動検出）、PHP 組み込みサーバー（`return $app->run();` と書くと public/ の実ファイルはサーバーが静的配信する）、Apache/nginx の index.php フォールバック | `Request`, `App` |
 
@@ -86,7 +86,8 @@ myapp/
 │   └── Note.php            class Note extends Washi\Db\Entity { public ?int $id = null; public string $title = ''; }
 ├── db/migrations/*.sql     ← 名前順に 1 回だけ実行。DB_AUTO_MIGRATE=true か $app->migrate()
 ├── storage/                ← app.db（既定 SQLite）、log/
-└── .env                    ← APP_DEBUG, DB_* など。無くても動く
+├── .env.defaults           ← 任意・コミットする既定値（秘密は書かない）
+└── .env                    ← 任意・環境ごとの上書き（gitignore）。APP_DEBUG, DB_* など。どちらも無くても動く
 ```
 
 **必須なのは `public/index.php` だけ。** 他のフォルダは「存在すれば使われる」。名前は `new App($root, ['pages' => 'src/pages'])` のように変更可。
@@ -97,7 +98,7 @@ myapp/
 
 ```
 public/index.php   $app = new App($root); $app->run();
-App::__construct   .env 読込 → config 配列 → Log/Session/Security/View の configure → lib/ autoload 登録 → DB 接続登録（遅延）
+App::__construct   .env → .env.defaults 読込（先勝ち） → config 配列 → Log/Session/Security/View の configure → lib/ autoload 登録 → DB 接続登録（遅延）
 run()              Request::fromGlobals() → handle() → Response::send()
 handle()           auto_migrate? → resolve() → Handler::run(グローバル MW → _access.php（外→内） → ページを include → ハンドラ MW → アクション) → セキュリティヘッダ → デバッグパネル
                    チェーンの各段で Response::from() により正規化する（MW の $next() は常に Response）
@@ -300,6 +301,11 @@ Washi\Db\Db::transaction(fn() => ...);
 
 `Log::traceLimit(int $frames)` で例外ログのスタックフレーム数を変更できる（既定 20、0 でトレース無しの 1 行に戻る）。
 
+**優先順位**（Env::load は既にあるキーを上書きしない＝先勝ち）:
+`実環境変数 > new App() 前に Env::load() したファイル > .env > .env.defaults > コード内の既定値`。
+`new App($root, [...])` の配列はこれら全部より強い。**環境で変わる値は配列に書かない**（本番の `APP_DEBUG=false` が効かなくなる）。
+`.env.defaults` には本番で安全な値を書き、開発機の `.env` で `APP_DEBUG=true` などにする。`.env` に `KEY=`（空）と書けば既定値を空で上書きできる。
+
 DB 環境変数: `DB_DRIVER`（sqlite / mysql / pgsql。未設定なら SQLite `storage/app.db`）、`DB_HOST DB_PORT DB_DATABASE DB_USERNAME DB_PASSWORD DB_CHARSET DB_TIMEZONE DB_SQL_MODE DB_SCHEMA DB_SQLITE_PATH DB_SOCKET`、`DB_LOG=true` で全クエリを Log へ。
 コードからは `Washi\Db\Db::addConnection('default', Washi\Db\Connection::sqlite($path))` などで上書き可（`new App()` の前に呼ぶ）。
 
@@ -320,7 +326,9 @@ washi/
 ├── examples/notes/              pages + views + lib/Note.php + db/migrations の CRUD
 ├── tests/smoke.sh               両サンプルを PHP 組み込みサーバーで起動し curl で検証（末尾で query_groups.php も実行）
 ├── tests/query_groups.php       where(fn) のグループ条件（プレースホルダ衝突・入れ子）を Query 直叩きで検証
-└── tests/request_basepath.php   サブディレクトリ設置（+ public/ への内部転送）時のパス解決
+├── tests/request_basepath.php   サブディレクトリ設置（+ public/ への内部転送）時のパス解決
+├── tests/env_layers.php         .env.defaults / .env / 実環境変数 / 先行 Env::load の優先順位
+└── tests/debug_panel.php        デバッグパネルの注入条件（完全な文書のみ・部分ロード除外）と明示ルートの記録
 ```
 
 ### 依存の向き（守ること）
@@ -336,7 +344,7 @@ DB 層がログやトレースを必要とする場合は `Db::listen(fn($sql, $
 | `View.php` | テンプレート include とレイアウト。`ob_start` で捕捉、例外時にバッファを片付ける |
 | `Session.php` | `$_SESSION` の遅延開始と flash（`_flash` キー配下、1 リクエスト後に消える） |
 | `Auth.php` / `Security.php` | セッションキー `_auth` / `_csrf` |
-| `Debug.php` | 組み込みエラー HTML（コードプレビュー）とパネル。アプリの views には依存しない |
+| `Debug.php` | 組み込みエラー HTML（コードプレビュー）とパネル。アプリの views には依存しない。パネルの材料は `Debug::record($kind, $row)` で App/View から積む（debug + debug_panel 時以外は何もしない）。タブは CSS のみ（JS なし、アプリの CSP で壊れない） |
 | `Middleware/*` | それぞれ 1 クラス 1 責務。`#[\Attribute]` 付きなので closure に付けられる |
 
 ---
@@ -388,6 +396,8 @@ fzr を知らなくても Washi を扱う上で困ることはない。
 | `_access.php` はページを include する前に走らせ、適用範囲は URL で決める | 以前は resolve 時に include していたため、echo 型ページや `return` 前の行は MW より先に実行されていた。ファイル位置で決めると `/admin/xxx` が `pages/index.php` のフォールバックに落ちたとき guard が外れる。検証は smoke.sh の `_access:` |
 | MW チェーンの各段を `Response::from()` で正規化 | 後処理 MW がヘッダを足すたびに normalize を書かずに済むように。`App::normalize()` は互換のため残し `Response::from()` に委譲 |
 | 設定は `.env` + `new App()` の配列のみ | 設定ファイルの種類を 1 つに |
+| 既定値は `.env.defaults`（固定名・自動読込）、`.env` が上書き。`.env` + `.env.local` 方式にはしない | 書式は同じなので「設定ファイルの種類」は増えない。既に gitignore 済みで秘密入りの `.env` の意味を変えると、コミット事故を招く。ファイル名やパスは設定させない（どのアプリでも同じ場所を見ればよい、優先順位を取り違えない、public/ に置かれない）。別ファイルが要るときは `new App()` の前に `Env::load()` を呼ぶ（先勝ちなので最優先になる） |
+| `Env::set()` は作らない | env は外から渡る入力で、起動時に 1 回読むもの。実行中に書き換えると、既に config 配列を組んだ後の App には効かないなど、呼ぶ位置で結果が変わる。コードで決める値は `env('KEY', '既定')` か `new App()` の配列に書く |
 | DB 未設定なら SQLite 自動 | 「サクっと」の核。DB 設計を後回しにできる |
 | `washi/db` は HTTP 層に依存しない | 単体ライブラリとして他プロジェクトにも `require` できる状態を保つ |
 | 静的ファサードは `Auth` `Session` `Security` `View` `Log` `Db` に限定し、`Request`/`Response` はインスタンス | ミドルウェアが Request を受け Response を返す形にするため。`request()` ヘルパーで手軽さは維持 |

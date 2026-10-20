@@ -6,7 +6,11 @@ namespace Washi;
  * .env loader + typed access to environment variables.
  *
  * - `Env::load($file)` parses KEY=VALUE lines (quotes and `#` comments supported) into $_ENV and putenv().
- *   Existing real environment variables win over the file (12-factor friendly).
+ *   Already-set variables are never overwritten (first one wins), so load files in priority order.
+ *   App loads `.env` then `.env.defaults`: real env > .env (per machine, gitignored) > .env.defaults (committed).
+ *   To add a file above them, call `Env::load('/etc/app.env')` before `new App()`.
+ * - There is deliberately no `Env::set()`: env is input from outside, read once at boot. Values the code
+ *   decides belong in `env('KEY', 'default')` or the `new App($root, [...])` array.
  * - `Env::get('APP_DEBUG', default)` reads $_ENV then getenv().
  * There is no ini/config layer on purpose: configuration is env vars plus the array passed to `new App()`.
  */
