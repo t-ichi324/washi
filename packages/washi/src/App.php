@@ -5,7 +5,6 @@ namespace Washi;
 use Washi\Db\Connection;
 use Washi\Db\Db;
 use Washi\Db\NotFoundException;
-use Washi\Db\Paginated;
 
 /**
  * The front controller. One instance per request; `App::current()` gives it to helpers.
@@ -14,7 +13,7 @@ use Washi\Db\Paginated;
  *   $app->get('/hello/{name}', fn(string $name) => "Hello $name");   // optional explicit routes
  *   $app->run();                          // explicit routes first, then pages/ files, else 404
  *
- * Request lifecycle: Request::fromGlobals() → resolve (routes → pages) → Handler::run (global middleware,
+ * Request lifecycle: Request::fromGlobals() → resolve (routes → pages) → Handler::run (global middleware, pages/…/_access.php,
  * handler middleware, action) → normalize(result) → Response::send(). Exceptions become error responses here.
  *
  * pages/ resolution for "/a/b/c" with method M (longest match first, `_`-prefixed files are never routable):
@@ -24,6 +23,10 @@ use Washi\Db\Paginated;
  *   pages/index.{m}.php, pages/index.php (params: ["a","b","c"])
  * A page file `return`s a Closure, a Handler (`page()->auth()->then(...)`), a Response/string/array,
  * or simply echoes HTML like classic PHP.
+ *
+ * Folder middleware: `pages/admin/_access.php` returning `page()->auth()->roles('admin')` guards every page
+ * (and every unknown URL) under pages/admin/, nested folders accumulate outer → inner. Chain order is
+ * global → _access.php → the page's own ->use(). The page file is included only after the guards pass.
  */
 class App
 {
@@ -236,20 +239,7 @@ class App
     /** Convert whatever a handler returned into a Response. */
     public function normalize(mixed $result): Response
     {
-        return match (true) {
-            $result instanceof Response      => $result,
-            $result === null                 => Response::empty(204),
-            is_string($result)               => Response::html($result),
-            $result instanceof \Stringable   => Response::html((string)$result),
-            is_int($result)                  => Response::empty($result),
-            $result instanceof Paginated     => Response::json([
-                'data' => $result->toArray(), 'total' => $result->total, 'page' => $result->currentPage,
-                'per_page' => $result->perPage, 'last_page' => $result->lastPage,
-            ]),
-            is_object($result) && !($result instanceof \JsonSerializable) && method_exists($result, 'toArray')
-                                             => Response::json($result->toArray()),
-            default                          => Response::json($result),
-        };
+        return Response::from($result);
     }
 
     /** @return array<int, array{sql:string,params:array,ms:float,connection:string,kind:string}> queries seen this request (debug only) */
@@ -270,19 +260,39 @@ class App
             $params = array_filter($m, 'is_string', ARRAY_FILTER_USE_KEY);
             return [$route['handler'], $params];
         }
-        if ($page = $this->resolvePage($request)) return $page;
-        if ($allowed) throw new HttpException(405, 'Allowed: ' . implode(', ', array_unique($allowed)));
-        throw new HttpException(404);
+        [$file, $params, $dirs] = $this->findPage($request);
+        $guards = $this->accessGuards($dirs, $request);
+        if ($file === null) {
+            $miss = $allowed ? new HttpException(405, 'Allowed: ' . implode(', ', array_unique($allowed))) : new HttpException(404);
+            if (!$guards) throw $miss;
+            // フォルダ内の未知 URL も _access.php を通してから 404 にする（未ログインで /admin/xxx を叩いても構成が漏れない）
+            return [Handler::make(fn() => throw $miss)->use(...$guards), []];
+        }
+        // ページ本体はチェーンの中で include する。_access.php が止めれば、echo 型ページも先頭のコードも 1 行も動かない
+        return [Handler::make(fn(Request $r) => $this->loadPage($file, $r)->run($r, $params))->use(...$guards), []];
     }
 
-    /** @return array{0:Handler,1:array}|null */
-    private function resolvePage(Request $request): ?array
+    /**
+     * pages/ の解決。include はしない（_access.php より先にページのコードを動かさないため）。
+     * dirs は _access.php を探すディレクトリ（pages/ から外→内）で、解決したファイルの位置ではなく URL で決める：
+     * URL の先頭から、pages/ に実在するディレクトリが続く限り（不正なセグメントで止まる）。
+     * こうしないと /admin/xxx が pages/index.php に余りセグメントで落ちたとき admin の guard が外れる。
+     * 解決したファイルのディレクトリは必ずこの dirs の先頭部分に含まれる。
+     * @return array{0:?string,1:list<string>,2:list<string>} [file, 余りセグメント, dirs]
+     */
+    private function findPage(Request $request): array
     {
         $dir = $this->path($this->config['pages']);
-        if (!is_dir($dir)) return null;
+        if (!is_dir($dir)) return [null, [], []];
         $segments = $request->segments();
+        $valid = static fn(string $s) => $s !== '' && $s[0] !== '_' && $s[0] !== '.' && preg_match('/^[A-Za-z0-9_.\-]+$/', $s);
+        $dirs = [$dir];
         foreach ($segments as $s) {
-            if ($s === '' || $s[0] === '_' || $s[0] === '.' || !preg_match('/^[A-Za-z0-9_.\-]+$/', $s)) return null;
+            if (!$valid($s) || !is_dir(end($dirs) . "/$s")) break;
+            $dirs[] = end($dirs) . "/$s";
+        }
+        foreach ($segments as $s) {
+            if (!$valid($s)) return [null, [], $dirs];
         }
         $m = strtolower($request->method === 'HEAD' ? 'GET' : $request->method);
         for ($i = count($segments); $i >= 0; $i--) {
@@ -293,10 +303,41 @@ class App
                 : ["$base.$m.php", "$base.php"];
             if ($i === 0) $candidates = ["$dir/index.$m.php", "$dir/index.php"];
             foreach ($candidates as $file) {
-                if (is_file($file)) return [$this->loadPage($file, $request), $params];
+                if (is_file($file)) return [$file, $params, $dirs];
             }
         }
-        return null;
+        return [null, [], $dirs];
+    }
+
+    /**
+     * 各ディレクトリの _access.php が返したミドルウェアを外→内の順で集める。
+     * return できるもの: `page()->auth()...`（then() なしの Handler）、`fn(Request, Closure $next)`、その配列、
+     * または何も返さない（`View::layout(...)` だけ書くなど）。
+     * @param list<string> $dirs
+     * @return list<callable>
+     */
+    private function accessGuards(array $dirs, Request $request): array
+    {
+        $app = $this;
+        $guards = [];
+        foreach ($dirs as $d) {
+            $file = "$d/_access.php";
+            if (!is_file($file)) continue;
+            $ret = (static function () use ($file, $request, $app) { return include $file; })();
+            if ($ret instanceof Handler) {
+                if ($ret->hasAction()) throw new \LogicException("{$file} must not call ->then(): it guards a folder, not a page");
+                $list = $ret->middleware();
+            } elseif ($ret === 1 || $ret === null) {
+                $list = [];
+            } else {
+                $list = is_array($ret) ? $ret : [$ret];
+            }
+            foreach ($list as $mw) {
+                if (!is_callable($mw) || is_string($mw)) throw new \LogicException("{$file} must return middleware `fn(Request, Closure \$next)`, a Handler or an array of them");
+                $guards[] = $mw;
+            }
+        }
+        return $guards;
     }
 
     private function loadPage(string $file, Request $request): Handler

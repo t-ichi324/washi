@@ -57,6 +57,29 @@ check "_prefixed page not routable" "404"                           "$(curl -s -
 check "path traversal blocked"     "404"                            "$(curl -s -o /dev/null -w '%{http_code}' "$B/..%2F..%2Fetc/passwd")"
 check "delete → list empty"        '"total":0'                      "$(curl $C -X POST -d "_token=$TOKEN" $B/notes/delete/1 >/dev/null; curl -s $B/api/notes)"
 
+# pages/**/_access.php: フォルダ単位のミドルウェア。ページは guard を通ってから include される
+P="$ROOT/examples/notes/pages"; mkdir -p "$P/zz_locked" "$P/zz_open/sub"
+printf '<?php\nreturn page()->use(fn($r, $next) => $next($r)->header("X-Robots-Tag", "noindex"))->auth();\n' > "$P/zz_locked/_access.php"
+printf '<?php touch(__DIR__ . "/hit"); echo "secret";\n' > "$P/zz_locked/secret.php"
+printf '<?php\nreturn function ($r, $next) { $res = $next($r); return $res->header("X-Chain", "outer>" . $res->getHeader("X-Chain")); };\n' > "$P/zz_open/_access.php"
+printf '<?php\nWashi\\View::layout(false);\nreturn [fn($r, $next) => $next($r)->header("X-Chain", "inner")];\n' > "$P/zz_open/sub/_access.php"
+printf '<?php\nreturn fn() => view("zz_bare");\n' > "$P/zz_open/sub/page.php"
+printf '<?php\nreturn fn() => ["a" => 1];\n' > "$P/zz_open/data.php"
+printf '<p>bare</p>\n' > "$ROOT/examples/notes/views/zz_bare.php"
+RES="$(curl -s -i $B/zz_locked/secret)"
+check "_access: guard → login"      "Location: /login"               "$RES"
+check "_access: \$next() → Response" "X-Robots-Tag: noindex"          "$RES"
+check "_access: page not included"  "absent"                         "$([ -e "$P/zz_locked/hit" ] && echo present || echo absent)"
+check "_access: unknown URL guarded" "Location: /login"              "$(curl -s -i $B/zz_locked/nope)"
+check "_access: guards x.php too"   "Location: /login"               "$(printf '<?php echo "x";\n' > "$P/zz_locked.php"; curl -s -i $B/zz_locked; rm -f "$P/zz_locked.php")"
+check "_access: _private URL guarded" "Location: /login"             "$(curl -s -i $B/zz_locked/_access)"
+RES="$(curl -s -i $B/zz_open/sub/page)"
+check "_access: nested outer→inner" "X-Chain: outer>inner"           "$RES"
+check "_access: View::layout(false)" "0"                             "$(printf '%s' "$RES" | grep -c '<html')"
+check "_access: array → JSON in MW" '{"a":1}'                        "$(curl -s $B/zz_open/data)"
+check "_access: not applied outside" "0"                             "$(curl -s -i $B/about | grep -c 'X-Chain')"
+rm -rf "$P/zz_locked" "$P/zz_open" "$ROOT/examples/notes/views/zz_bare.php"
+
 # 500 は Log::exception 経由でスタックトレースと previous 連鎖を 1 行に残す（本番は画面に出ないため）
 printf '<?php\nreturn fn() => throw new LogicException("kaboom", 0, new RuntimeException("root cause"));\n' > "$ROOT/examples/notes/pages/boom.php"
 curl -s -o /dev/null $B/boom

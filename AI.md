@@ -43,11 +43,11 @@
 |---|---|---|
 | ルーティング | `pages/` ファイル解決（最長一致、HTTP メソッド別ファイル `edit.post.php`）、明示ルート `$app->get('/x/{id}', fn)`、`{id:\d+}` 正規表現、405 判定 | `App` |
 | ハンドラ | クロージャ引数の自動解決（URL パラメータを名前→位置で束縛、`int`/`float` 検証、`Request` 型注入） | `Handler` |
-| ミドルウェア | `fn(Request, Closure $next)` 形式。グローバル `$app->use()`、ハンドラ単位 `->use()`、PHP Attribute `#[RequireAuth]` も可 | `Handler`, `Middleware/*` |
+| ミドルウェア | `fn(Request, Closure $next)` 形式（`$next()` は常に `Response` を返す）。グローバル `$app->use()`、フォルダ単位 `pages/admin/_access.php`、ハンドラ単位 `->use()`、PHP Attribute `#[RequireAuth]` も可 | `Handler`, `App`, `Middleware/*` |
 | 組み込みミドルウェア | `->auth()` 未ログインをログイン画面へ、`->guest()`、`->roles('admin')`、`->csrf()` | `Middleware/*` |
 | リクエスト | GET + POST + JSON body を統合した型付き取得 `str/int/float/bool/arr/all/only/file`、`wantsJson`、`isAjax`、`_method` オーバーライド、信頼プロキシ考慮の `ip()` | `Request` |
 | レスポンス | `html/json/redirect/text/file/download/empty`、`->status()->header()->cookie()`。戻り値の自動変換 | `Response`, `App::normalize` |
-| ビュー | 素の PHP、`extract` された変数、レイアウト自動包み、`partial()`、`View::share()`、セクション `View::start()/stop()/section()` | `View` |
+| ビュー | 素の PHP、`extract` された変数、レイアウト自動包み（既定は `View::layout()` で変更可）、`partial()`、`View::share()`、セクション `View::start()/stop()/section()` | `View` |
 | セッション | 遅延開始、HttpOnly/SameSite=Lax/Secure 自動、flash（1 回だけ読める値） | `Session` |
 | 認証 | `Auth::login($user)` に任意のオブジェクト/配列、`check/user/id/roles/hasRole`、Remember-me（opt-in） | `Auth` |
 | セキュリティ | CSRF トークン（セッション単位、`csrf_field()`、ヘッダ `X-CSRF-TOKEN` も可）、`password_hash` ラッパ、既定のセキュリティヘッダ、pages のパストラバーサル防止、外部 URL への `url()` 素通し防止なし（注: `redirect()` は与えた URL をそのまま使う） | `Security`, `App` |
@@ -72,7 +72,8 @@ myapp/
 ├── public/index.php        ← 3 行。 $app = new Washi\App(dirname(__DIR__)); $app->run();
 ├── pages/                  ← URL = ファイル。return で Closure / page()->…->then() / Response / 文字列 / 配列
 │   ├── index.php           GET /
-│   ├── about.php           GET /about（return せず echo だけでも動く。ただしミドルウェアは掛からない）
+│   ├── about.php           GET /about（return せず echo だけでも動く。ページ単位の ->use() は書けない）
+│   ├── admin/_access.php   ← 任意。/admin/ 以下の全 URL に掛かるミドルウェア（例: return page()->auth()->roles('admin');）
 │   ├── notes/new.php       GET  /notes/new
 │   ├── notes/new.post.php  POST /notes/new
 │   ├── notes/edit.php      GET  /notes/edit/{id}   ← 余ったセグメントが引数 fn(int $id)
@@ -98,8 +99,10 @@ myapp/
 public/index.php   $app = new App($root); $app->run();
 App::__construct   .env 読込 → config 配列 → Log/Session/Security/View の configure → lib/ autoload 登録 → DB 接続登録（遅延）
 run()              Request::fromGlobals() → handle() → Response::send()
-handle()           auto_migrate? → resolve() → Handler::run(グローバル MW → ハンドラ MW → アクション) → normalize() → セキュリティヘッダ → デバッグパネル
-resolve()          1) 明示ルート（$app->get() 等）  2) pages/ 解決  3) 405 か 404
+handle()           auto_migrate? → resolve() → Handler::run(グローバル MW → _access.php（外→内） → ページを include → ハンドラ MW → アクション) → セキュリティヘッダ → デバッグパネル
+                   チェーンの各段で Response::from() により正規化する（MW の $next() は常に Response）
+resolve()          1) 明示ルート（$app->get() 等）  2) pages/ 解決（ファイルを探すだけで include しない）  3) 405 か 404
+                   pages/ 配下で 404/405 になる URL も、そのフォルダの _access.php があれば先にそれを通す
 例外               HttpException → その status / Db\NotFoundException → 404 / その他 → 500（Log に記録）
                    wantsJson → JSON / views/_error.{status}.php → views/_error.php → Debug::errorPage
 ```
@@ -118,10 +121,19 @@ pages/index.{m}.php → pages/index.php                                         
 |---|---|
 | `Closure` | アクション。`Handler::make($closure)` |
 | `Handler`（`page()->auth()->then(fn)`） | そのまま。`then()` 未呼び出しは LogicException |
-| `Response` / string / array / object | 即値。ミドルウェアなしで normalize |
-| 何も return しない | include 中の echo 出力を HTML 応答にする（素の PHP モード。ミドルウェアは掛からない） |
+| `Response` / string / array / object | 即値。ページ単位の MW なしで normalize |
+| 何も return しない | include 中の echo 出力を HTML 応答にする（素の PHP モード。ページ単位の MW は無し） |
 
 ページファイルのスコープには `$request`（Request）と `$app`（App）が見える。
+ページの include はグローバル MW と `_access.php` を通った後なので、どの形のページでも（echo 型でも、`return` より前の行でも）guard より先には動かない。
+
+### フォルダ単位のミドルウェア（`_access.php`）
+`pages/admin/_access.php` は `/admin` と `/admin/...` の全リクエストに掛かる（`.htaccess` 相当）。
+- 適用範囲は**解決したファイルの位置ではなく URL** で決める。URL の先頭から `pages/` に実在するディレクトリが続く範囲の `_access.php` を外→内の順に全部掛ける。だから `/admin/xxx` が `pages/index.php` に余りセグメントで落ちても、`pages/admin.php` で解決しても admin の guard は外れない
+- 親の guard は子フォルダに累積し、子で解除する方法はない（ログイン画面など公開ページはフォルダの外に置く）
+- `return` できるもの: `page()->auth()->roles('admin')`（`then()` を呼んだら LogicException）、`fn(Request, Closure $next)`、その配列、または何も返さない（`View::layout('_layout.admin');` だけ書くなど。この行は guard の判定前、resolve 時に実行される）
+- 明示ルート（`$app->get()`）には掛からない
+- `$next()` より後の処理は、内側で例外が出ると実行されない。必ず残したいログなどは `try { return $next($r); } finally { ... }`
 
 ### アクション引数の解決（`Handler::invoke`）
 1. `Request` 型の引数 → 現在のリクエスト
@@ -201,6 +213,17 @@ class RequireCan implements Washi\Middleware\Middleware {
 // 全ページ共通: $app->use(fn($r, $next) => ... ) を public/index.php で
 ```
 
+**フォルダごと保護する（管理画面など）**
+```php
+// pages/admin/_access.php   → /admin 以下の全ページ（と未知の URL）に掛かる。各ページには何も書かなくてよい
+Washi\View::layout('_layout.admin');                       // admin 配下の既定レイアウト（任意）
+return page()->auth()->roles('admin')->csrf()
+    ->use(function (Washi\Request $r, Closure $next) {      // 後処理: $next() は常に Response
+        Washi\Log::info('admin', ['user' => Washi\Auth::id(), 'path' => $r->path]);
+        return $next($r)->header('X-Robots-Tag', 'noindex');
+    });
+```
+
 **Entity を定義する（これが「モデル」のすべて）**
 ```php
 // lib/Item.php
@@ -222,7 +245,7 @@ Washi\Db\Db::transaction(fn() => ...);
 <title><?= h($title ?? 'App') ?></title> ... <main><?= $content ?></main> <?= Washi\View::section('scripts') ?>
 // views/some.php
 <?php Washi\View::start('scripts'); ?><script>...</script><?php Washi\View::stop(); ?>
-// レイアウトを変える: view('x', $data, layout: '_layout.admin')   無し: layout: false
+// レイアウトを変える: view('x', $data, layout: '_layout.admin')   無し: layout: false   既定を変える: View::layout('_layout.admin')
 ```
 
 **マイグレーション**: `db/migrations/002_add_price.sql` を置く → `.env` に `DB_AUTO_MIGRATE=true` か `php -r '(new Washi\App(__DIR__))->migrate();'`。
@@ -361,6 +384,9 @@ fzr を知らなくても Washi を扱う上で困ることはない。
 | フロントコントローラは残す（純粋な file=URL にしない） | 認証・CSRF・エラー処理を全ファイル先頭に書く世界に戻らないため。ミドルウェアをここで通す |
 | 戻り値規約 | `Response::view()` のような包む作業を消し、1 行ハンドラを可能にする |
 | ミドルウェアは `fn(Request, Closure $next)`、Attribute 記法も可 | 前身は Attribute を if 文で列挙しておりアプリが追加できなかった |
+| フォルダ単位 MW は `pages/**/_access.php`（`.` 始まりにしない） | 認証を全ページに書くと 1 枚の書き忘れが穴になる。`.access.php` は ls・グロブ・FTP・デプロイで落ちやすく、消えると黙って全公開になる（fail-open）。`_` は既に「フレームワークが認識し URL から届かない」の印。名前は `.htaccess` の連想で access |
+| `_access.php` はページを include する前に走らせ、適用範囲は URL で決める | 以前は resolve 時に include していたため、echo 型ページや `return` 前の行は MW より先に実行されていた。ファイル位置で決めると `/admin/xxx` が `pages/index.php` のフォールバックに落ちたとき guard が外れる。検証は smoke.sh の `_access:` |
+| MW チェーンの各段を `Response::from()` で正規化 | 後処理 MW がヘッダを足すたびに normalize を書かずに済むように。`App::normalize()` は互換のため残し `Response::from()` に委譲 |
 | 設定は `.env` + `new App()` の配列のみ | 設定ファイルの種類を 1 つに |
 | DB 未設定なら SQLite 自動 | 「サクっと」の核。DB 設計を後回しにできる |
 | `washi/db` は HTTP 層に依存しない | 単体ライブラリとして他プロジェクトにも `require` できる状態を保つ |

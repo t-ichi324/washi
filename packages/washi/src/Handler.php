@@ -55,16 +55,22 @@ class Handler
     public function roles(string ...$roles): static        { return $this->use(new RequireRole(...$roles)); }
     public function csrf(): static                          { return $this->use(new VerifyCsrf()); }
 
-    /** Run middleware then the action. Returns the raw (un-normalized) result. */
-    public function run(Request $request, array $params = [], array $globalMiddleware = []): mixed
+    /** @return list<callable> middleware added so far (how a pages/…/_access.php hands over its chain) */
+    public function middleware(): array { return $this->middleware; }
+
+    /**
+     * Run middleware then the action. Every step is normalized with Response::from(), so a middleware's
+     * `$next($r)` always returns a Response it can add headers to, whatever the action returned.
+     */
+    public function run(Request $request, array $params = [], array $globalMiddleware = []): Response
     {
         if ($this->action === null) throw new \LogicException('Handler has no action: call ->then(fn() => ...)');
-        $core = fn(Request $req) => $this->invoke($req, $params);
+        $core = fn(Request $req) => Response::from($this->invoke($req, $params));
         $chain = array_merge($globalMiddleware, $this->middleware);
         for ($i = count($chain) - 1; $i >= 0; $i--) {
             $mw = $chain[$i];
             $next = $core;
-            $core = fn(Request $req) => $mw($req, $next);
+            $core = fn(Request $req) => Response::from($mw($req, $next));
         }
         return $core($request);
     }

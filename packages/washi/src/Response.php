@@ -2,9 +2,11 @@
 
 namespace Washi;
 
+use Washi\Db\Paginated;
+
 /**
  * HTTP response value object. Handlers may return one of these, or any plain value
- * that App::normalize() converts: string → HTML, array/object → JSON, null → 204.
+ * that Response::from() converts: string → HTML, array/object → JSON, null → 204.
  *
  *   Response::html('<p>hi</p>')            Response::json($data, 201)
  *   Response::redirect('/path')            Response::text('plain')
@@ -51,6 +53,28 @@ class Response
     public static function empty(int $status = 204): self
     {
         return new self('', $status);
+    }
+
+    /**
+     * Convert whatever a handler returned into a Response (the return-value convention).
+     * Applied at every step of the middleware chain, so `$next($r)` always yields a Response.
+     */
+    public static function from(mixed $result): self
+    {
+        return match (true) {
+            $result instanceof self          => $result,
+            $result === null                 => self::empty(204),
+            is_string($result)               => self::html($result),
+            $result instanceof \Stringable   => self::html((string)$result),
+            is_int($result)                  => self::empty($result),
+            $result instanceof Paginated     => self::json([
+                'data' => $result->toArray(), 'total' => $result->total, 'page' => $result->currentPage,
+                'per_page' => $result->perPage, 'last_page' => $result->lastPage,
+            ]),
+            is_object($result) && !($result instanceof \JsonSerializable) && method_exists($result, 'toArray')
+                                             => self::json($result->toArray()),
+            default                          => self::json($result),
+        };
     }
 
     /** Stream an existing file (Content-Type sniffed; attachment when $downloadName given) */

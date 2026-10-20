@@ -8,7 +8,7 @@ namespace Washi;
  * - `View::render('user/edit', $data)` includes views/user/edit.php with $data extracted as locals.
  * - `View::page('user/edit', $data)` renders the template, then wraps it in views/_layout.php
  *   (if it exists) where the template output is `$content`. Pass `layout: 'admin'` for views/_layout.admin.php
- *   … or any template name; `layout: false` skips wrapping.
+ *   … or any template name; `layout: false` skips wrapping. `View::layout('_layout.admin')` changes the default.
  * - Inside templates: `$this` is not used; call helpers (`h()`, `url()`, `partial()`, `csrf_field()`).
  * - Templates can set `$title` (or any variable) via `View::share('title', ...)` for the layout; the
  *   `title()` helper does exactly that.
@@ -17,7 +17,7 @@ namespace Washi;
 class View
 {
     private static string $dir = '';
-    private static string $defaultLayout = '_layout';
+    private static string|false $defaultLayout = '_layout';
     private static array $shared = [];
     private static array $sections = [];
     private static array $sectionStack = [];
@@ -29,6 +29,15 @@ class View
     }
 
     public static function dir(): string { return self::$dir; }
+
+    /**
+     * Change the default layout for the rest of this request (`false` = no layout).
+     * Typical use: `View::layout('_layout.admin')` in pages/admin/_access.php.
+     */
+    public static function layout(string|false $layout): void
+    {
+        self::$defaultLayout = $layout;
+    }
 
     /** Variables visible to every template and layout */
     public static function share(string|array $key, mixed $value = null): void
