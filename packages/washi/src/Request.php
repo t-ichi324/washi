@@ -45,7 +45,7 @@ class Request
         // その場合 basePath をそのまま剥がせないので、末尾の public/ を落として試す。
         if ($basePath !== '' && !str_starts_with($path, $basePath)) {
             $parent = preg_replace('#/[^/]+$#', '', $basePath);
-            if ($parent !== '' && $parent !== $basePath && str_starts_with($path, $parent)) {
+            if ($parent !== $basePath && ($parent === '' || str_starts_with($path, $parent))) {
                 $basePath = $parent;
             }
         }

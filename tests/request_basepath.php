@@ -49,4 +49,9 @@ $check('query string stripped', $p === '/');
 [$p, $b] = $resolve('/app/public/salon/abc', '/app/public/index.php');
 $check('direct public/ still works', $p === '/salon/abc');
 
+// ドメイン直下 + .htaccess で public/ へ内部転送（SCRIPT_NAME は /public/index.php、URL は /login）
+[$p, $b] = $resolve('/login', '/public/index.php');
+$check('root+rewrite: path', $p === '/login');
+$check('root+rewrite: basePath empty', $b === '');
+
 exit($fail === 0 ? 0 : 1);
