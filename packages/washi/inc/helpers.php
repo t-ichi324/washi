@@ -7,6 +7,7 @@
  * Handler / flow : page() redirect() back() abort() json()
  * Views          : view() render() partial() title() h() url() abs_url() csrf_field() csrf_token()
  * Input & state  : request() input() user() flash() flashes() old() err() has_err() env() app()
+ * Client IP      : client_ip() ip_allowed()
  * HTML bits      : checked() selected() disabled() options()
  * Debug          : dd() dump()
  */
@@ -27,6 +28,19 @@ if (!function_exists('app')) {
 
 if (!function_exists('request')) {
     function request(): Request { return App::current()->request(); }
+}
+
+if (!function_exists('client_ip')) {
+    /** 送信元 IP（config `trusted_proxies` を考慮した Request::ip()） */
+    function client_ip(?Request $request = null): string
+    {
+        return ($request ?? App::current()->request())->ip((string)App::current()->config('trusted_proxies', ''));
+    }
+}
+
+if (!function_exists('ip_allowed')) {
+    /** 送信元 IP が whitelist.txt（config `ip_allowlist`）に載っているか。一覧が空なら true */
+    function ip_allowed(?string $ip = null): bool { return \Washi\IpAllowlist::forApp()->allows($ip ?? client_ip()); }
 }
 
 if (!function_exists('input')) {

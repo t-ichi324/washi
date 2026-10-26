@@ -44,12 +44,13 @@
 | ルーティング | `pages/` ファイル解決（最長一致、HTTP メソッド別ファイル `edit.post.php`）、明示ルート `$app->get('/x/{id}', fn)`、`{id:\d+}` 正規表現、405 判定 | `App` |
 | ハンドラ | クロージャ引数の自動解決（URL パラメータを名前→位置で束縛、`int`/`float` 検証、`Request` 型注入、`...$rest` で残り全部）。pages の余りセグメントを使い切らなければ 404 | `Handler` |
 | ミドルウェア | `fn(Request, Closure $next)` 形式（`$next()` は常に `Response` を返す）。グローバル `$app->use()`、フォルダ単位 `pages/admin/_access.php`、ハンドラ単位 `->use()`、PHP Attribute `#[RequireAuth]` も可 | `Handler`, `App`, `Middleware/*` |
-| 組み込みミドルウェア | `->auth()` 未ログインをログイン画面へ、`->guest()`、`->roles('admin')`、`->csrf()` | `Middleware/*` |
+| 組み込みミドルウェア | `->auth()` 未ログインをログイン画面へ、`->guest()`、`->roles('admin')`、`->csrf()`、`->ipAllowlist()` whitelist.txt に無い送信元を 403 | `Middleware/*` |
 | リクエスト | GET + POST + JSON body を統合した型付き取得 `str/int/float/bool/arr/all/only/file`、`validate([...])`、`wantsJson`、`isAjax`、`_method` オーバーライド、信頼プロキシ考慮の `ip()` | `Request` |
 | レスポンス | `html/json/redirect/text/file/download/empty`、`->status()->header()->cookie()`。戻り値の自動変換。ステータス行は理由句付きで送る（419 などが Apache で 500 に化けない） | `Response`, `App::normalize` |
 | ビュー | 素の PHP、`extract` された変数、レイアウト自動包み（既定は `View::layout()` で変更可）、`partial()`、`View::share()`、セクション `View::start()/stop()/section()` | `View` |
 | セッション | 遅延開始、HttpOnly/SameSite=Lax/Secure 自動、flash（1 回だけ読める値） | `Session` |
 | 認証 | `Auth::login($user)` に任意のオブジェクト/配列、`check/user/id/roles/hasRole`、Remember-me（opt-in、§5 のレシピ。cookie は basePath 限定・HTTPS なら Secure） | `Auth` |
+| IP 許可リスト | `whitelist.txt`（1 行 1 件、IP か CIDR、IPv4/IPv6、`#` コメント）。無い・空なら制限なし。ページ/フォルダごと閉じるなら `->ipAllowlist()`、ログイン時だけ弾くなら `ip_allowed()` で判定して `back()` | `IpAllowlist`, `Middleware/RequireIp` |
 | セキュリティ | CSRF トークン（セッション単位、`csrf_field()`、ヘッダ `X-CSRF-TOKEN` も可）、`password_hash` ラッパ、既定のセキュリティヘッダ、pages のパストラバーサル防止、外部 URL への `url()` 素通し防止なし（注: `redirect()` は与えた URL をそのまま使う） | `Security`, `App` |
 | バリデーション | `$r->validate(['email' => 'required\|email'])`（失敗で back() 相当、JSON なら 422）と `Validator::from($r)->rule('email', 'メール')->required()->email()`（チェーン）。判定は共通。ルール: required email url numeric integer date confirmed min max minValue maxValue between regex in + `with(fn)`。日本語文言、`Validator::messages()` で差し替え | `Validator`, `FieldRules`, `ValidationException` |
 | フォーム補助 | `back($errors)` でエラーと入力値を flash → `err()` `old()` `has_err()` で再表示 | helpers |
@@ -220,6 +221,15 @@ return page()->guest()->csrf()->then(function (Washi\Request $r) {
 // pages/logout.post.php
 return page()->csrf()->then(function () { Washi\Auth::logout(); return redirect('/login'); });
 ```
+**IP で絞る（管理画面・ログイン）**: 一覧はプロジェクト直下の `whitelist.txt`（public/ の外なので URL からは読めない）。デプロイ対象から外し、環境ごとに置く
+```php
+// フォルダごと閉じる: pages/admin/_access.php   → 一覧に無い送信元は 403
+return page()->ipAllowlist()->auth()->roles('admin');
+// ログイン時だけ弾く（画面は誰でも開ける）: pages/login.post.php の先頭で
+if (!ip_allowed()) return back(['id' => 'このIP(' . client_ip() . ')ではログインできません。管理者に問い合わせてください。']);
+```
+ロードバランサ・CDN 越しなら `TRUSTED_PROXIES` にその IP を書く（未設定だと全員がプロキシの IP に見える。`*` は X-Forwarded-For の偽装で一覧をすり抜けられるので使わない）。
+
 **ログイン状態を保持する（Remember-me）**: トークンの保存先はアプリが持つ。ハッシュで保存し、cookie の生値と照合する
 ```php
 // public/index.php（new App の後）
@@ -321,6 +331,7 @@ Washi\Db\Db::transaction(fn() => ...);
 | `h($v)` | string | HTML エスケープ（ENT_QUOTES, UTF-8） |
 | `checked/selected/disabled($bool)` / `options($list, $sel)` | string | HTML 属性の出力 |
 | `env($k, $d)` / `app()` | | |
+| `client_ip()` / `ip_allowed($ip=null)` | string / bool | 送信元 IP（`trusted_proxies` 考慮）/ whitelist.txt に載っているか（一覧が空なら true） |
 | `dump(...)` / `dd(...)` | | デバッグ |
 
 ---
@@ -342,6 +353,7 @@ Washi\Db\Db::transaction(fn() => ...);
 | `log` | storage | `LOG_TARGET` | `storage` → storage/log/日付.log、`stderr`、または絶対パス |
 | `url` | '' | `APP_URL` | `abs_url()` の起点（`https://example.jp/app`）。空ならリクエストの Host から |
 | `trusted_proxies` | '' | `TRUSTED_PROXIES` | `Request::ip()` で X-Forwarded-For を信頼する送信元（`*` 可） |
+| `ip_allowlist` | whitelist.txt | `IP_ALLOWLIST` | `->ipAllowlist()` / `ip_allowed()` の一覧（root 相対か絶対）。無い・空なら制限なし |
 | `security_headers` | true | | X-Frame-Options / nosniff / Referrer-Policy |
 
 `Log::traceLimit(int $frames)` で例外ログのスタックフレーム数を変更できる（既定 20、0 でトレース無しの 1 行に戻る）。
@@ -366,8 +378,8 @@ washi/
 │   ├── support/  washi/support   Washi\Collection（配列ラッパ）, Washi\Cast（安全な型変換）          依存なし
 │   ├── db/       washi/db        Washi\Db\{Db, Connection, Query, Entity, Paginated, Migration, NotFoundException}   support のみ
 │   └── washi/    washi/washi     Washi\{App, Handler, Request, Response, View, Session, Auth, Security, Env, Log, Debug, HttpException,
-│                                       Validator, FieldRules, ValidationException, LibAutoloader}
-│                                 Washi\Middleware\{Middleware, RequireAuth, RequireGuest, RequireRole, VerifyCsrf}   inc/helpers.php
+│                                       Validator, FieldRules, ValidationException, LibAutoloader, IpAllowlist}
+│                                 Washi\Middleware\{Middleware, RequireAuth, RequireGuest, RequireRole, RequireIp, VerifyCsrf}   inc/helpers.php
 ├── examples/hello/index.php     1 ファイル版（明示ルートのみ、DB 自動 SQLite）
 ├── examples/notes/              pages + views + lib/Note.php + db/migrations の CRUD
 ├── tests/smoke.sh               両サンプルを PHP 組み込みサーバーで起動し curl で検証（末尾で query_groups.php も実行）
@@ -376,7 +388,8 @@ washi/
 ├── tests/env_layers.php         .env.defaults / .env / 実環境変数 / 先行 Env::load の優先順位
 ├── tests/debug_panel.php        デバッグパネルの注入条件（完全な文書のみ・部分ロード除外）と明示ルートの記録
 ├── tests/validator.php          バリデータ（両方の入口・各ルール・422/back）、old() の既定値、abs_url()
-└── tests/lib_autoload.php       lib/ の自動読み込み（サブフォルダ・名前空間なし/つき・重複・本番キャッシュ）
+├── tests/lib_autoload.php       lib/ の自動読み込み（サブフォルダ・名前空間なし/つき・重複・本番キャッシュ）
+└── tests/ip_allowlist.php       whitelist.txt の照合（IP・CIDR・IPv6・コメント・空なら制限なし）
 ```
 
 ### 依存の向き（守ること）
@@ -394,6 +407,7 @@ DB 層がログやトレースを必要とする場合は `Db::listen(fn($sql, $
 | `Auth.php` / `Security.php` | セッションキー `_auth` / `_csrf` |
 | `Debug.php` | 組み込みエラー HTML（コードプレビュー）とパネル。アプリの views には依存しない。パネルの材料は `Debug::record($kind, $row)` で App/View から積む（debug + debug_panel 時以外は何もしない）。タブは CSS のみ（JS なし、アプリの CSP で壊れない） |
 | `LibAutoloader.php` | lib/ の自動読み込み（App が登録）。名前空間つきはパス、それ以外はファイル名の対応表で探す。本番は storage/cache にキャッシュ |
+| `IpAllowlist.php` | whitelist.txt の読み込みと IP/CIDR 照合（`IpAllowlist::matches` が唯一の判定箇所）。`RequireIp` と `ip_allowed()` はここを呼ぶだけ |
 | `Validator.php` / `FieldRules.php` | 入力・エラー・back() を持つ Validator と、1 フィールドのルールと判定（FieldRules::check が唯一の判定箇所）。`ValidationException` は App が back() / 422 に変える |
 | `Middleware/*` | それぞれ 1 クラス 1 責務。`#[\Attribute]` 付きなので closure に付けられる |
 
@@ -460,3 +474,4 @@ fzr を知らなくても Washi を扱う上で困ることはない。
 | バリデータの入口は `$r->validate()`（宣言・例外）と `Validator::from()`（チェーン）の 2 つ、判定は `FieldRules::check` 1 か所 | 宣言は 1 行で済み if も要らない。チェーンは戻り先の指定や DB を見てからのエラー追加など、手で制御したい画面用（fzr の Form と同じ形で移植しやすい）。2 つの判定を持つと挙動がずれるので中身は共通 |
 | `with(fn)` と `required` / `confirmed` 以外のルールは、値が空なら検査しない | 任意項目に「入力されたら形式を検査」を書けるようにするため（Laravel の implicit rule と同じ）。代わりに確認用フィールドの一致は `with()` で書くと空同士で素通りするので、専用の `confirmed` を用意し空でも検査する |
 | lib/ はサブフォルダも探し、名前空間なしのクラスはファイル名で引く。同名は例外 | lib/ が 30 クラスを超えると役割別に分けたくなるが、そのためだけに名前空間を付けると pages/・views/ の全ファイルに use が要る（reserv.c-aca で約 150 ファイル）。フォルダ構成を要求しない方針どおり、分け方はアプリに任せる。同名を先勝ちで読むと、フォルダを足しただけで別のクラスが静かに読まれるので重複は例外にする。対応表は本番だけキャッシュし、ミスや消えたパスで自動的に作り直す（デプロイ手順にキャッシュ削除を増やさない）。検証は `tests/lib_autoload.php` |
+| IP 許可リストは無い・空なら制限なし（fail-open）。ミドルウェアは 403 だけ、ログイン時に弾くのは `ip_allowed()` でアプリが書く | `_access.php` を `.` 始まりにしなかったのは消えると黙って全公開になるからだが、許可リストは逆で、fail-closed だと一覧を置く前の初回デプロイや書き損じで全員が締め出され、サーバーに入れない限り直せない。一覧は環境ごとの値でデプロイから外すので「コードだけ先に入れ、許可が出たら一覧を置く」運用にもなる。書式は PHP 5 系の旧システム（kunrenshien の `common/ipguard.php`）と同じにして、運用を揃える。弾き方（403 か、ログイン画面にメッセージ）は画面ごとに違うので、FW は判定と 403 だけを持つ。検証は `tests/ip_allowlist.php` と smoke.sh の `ip:` |

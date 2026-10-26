@@ -107,6 +107,16 @@ check "panel: _access.php listed"  "pages/zz_open/_access.php"      "$(curl -s $
 check "_access: not applied outside" "0"                             "$(curl -s -i $B/about | grep -c 'X-Chain')"
 rm -rf "$P/zz_locked" "$P/zz_open" "$ROOT/examples/notes/views/zz_bare.php"
 
+# ->ipAllowlist(): 一覧に無い送信元は 403、載っていれば通す、一覧が無ければ素通し（組み込みサーバーの送信元は 127.0.0.1）
+P="$ROOT/examples/notes/pages"; S="$ROOT/examples/notes/storage"
+printf '<?php\nreturn page()->ipAllowlist("storage/zz_allow.txt")->then(fn() => "ip ok");\n' > "$P/zz_ip.php"
+printf '<?php\nreturn #[Washi\\Middleware\\RequireIp("storage/zz_allow.txt")] fn() => "attr ok";\n' > "$P/zz_ip_attr.php"
+check "ip: no list → pass"         "ip ok"                          "$(rm -f "$S/zz_allow.txt"; curl -s $B/zz_ip)"
+check "ip: unlisted → 403"         "403"                            "$(printf '203.0.113.10\n' > "$S/zz_allow.txt"; curl -s -o /dev/null -w '%{http_code}' $B/zz_ip)"
+check "ip: attribute → 403"        "403"                            "$(curl -s -o /dev/null -w '%{http_code}' $B/zz_ip_attr)"
+check "ip: listed (CIDR) → pass"   "ip ok"                          "$(printf '# local\n127.0.0.0/8\n' > "$S/zz_allow.txt"; curl -s $B/zz_ip)"
+rm -f "$P/zz_ip.php" "$P/zz_ip_attr.php" "$S/zz_allow.txt"
+
 # 500 は Log::exception 経由でスタックトレースと previous 連鎖を 1 行に残す（本番は画面に出ないため）
 printf '<?php\nreturn fn() => throw new LogicException("kaboom", 0, new RuntimeException("root cause"));\n' > "$ROOT/examples/notes/pages/boom.php"
 curl -s -o /dev/null $B/boom
@@ -167,6 +177,18 @@ while IFS= read -r line; do
   esac
 done <<< "$VOUT"
 
+# Collection: 列名が PHP 関数名（date など）でも keyBy / groupBy / sum が関数として呼ばない
+echo
+echo "== washi Collection"
+COUT="$(cd "$ROOT" && php tests/collection.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+    *)        fail "collection.php: $line";;
+  esac
+done <<< "$COUT"
+
 # lib/ の自動読み込み: サブフォルダ・名前空間なし/つき・重複・本番キャッシュ
 echo
 echo "== washi LibAutoloader"
@@ -189,5 +211,17 @@ while IFS= read -r line; do
     "FAIL "*) fail "${line#FAIL }";;
   esac
 done <<< "$EOUT"
+
+# IpAllowlist: whitelist.txt の照合（IP・CIDR・IPv6・コメント・空なら制限なし）
+echo
+echo "== washi IpAllowlist"
+IOUT="$(cd "$ROOT" && php tests/ip_allowlist.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+    *)        fail "ip_allowlist.php: $line";;
+  esac
+done <<< "$IOUT"
 
 echo; echo "passed: $PASS  failed: $FAIL"; rm -rf "$TMP"; [ "$FAIL" -eq 0 ]

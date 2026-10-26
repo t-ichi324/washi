@@ -5,6 +5,7 @@ namespace Washi;
 use Washi\Middleware\Middleware;
 use Washi\Middleware\RequireAuth;
 use Washi\Middleware\RequireGuest;
+use Washi\Middleware\RequireIp;
 use Washi\Middleware\RequireRole;
 use Washi\Middleware\VerifyCsrf;
 
@@ -55,6 +56,7 @@ class Handler
     public function guest(string $redirect = '/'): static  { return $this->use(new RequireGuest($redirect)); }
     public function roles(string ...$roles): static        { return $this->use(new RequireRole(...$roles)); }
     public function csrf(): static                          { return $this->use(new VerifyCsrf()); }
+    public function ipAllowlist(?string $file = null): static { return $this->use(new RequireIp($file)); }
 
     /** @return list<callable> middleware added so far (how a pages/…/_access.php hands over its chain) */
     public function middleware(): array { return $this->middleware; }

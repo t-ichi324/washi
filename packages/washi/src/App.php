@@ -68,6 +68,7 @@ class App
             'csrf_token'     => '_token',
             'log'            => Env::get('LOG_TARGET', 'storage'),   // 'stderr' | 'storage' | absolute dir
             'trusted_proxies'=> Env::get('TRUSTED_PROXIES', ''),
+            'ip_allowlist'   => Env::get('IP_ALLOWLIST', 'whitelist.txt'),   // IpAllowlist の一覧（root 相対か絶対）。無い・空なら制限なし
             'url'            => Env::get('APP_URL', ''),     // 外に出す絶対 URL の起点（https://example.com/app）。空ならリクエストの Host から作る
             'security_headers' => true,
         ];

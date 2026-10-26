@@ -90,6 +90,15 @@ class Collection implements \ArrayAccess, \IteratorAggregate, \Countable
     }
 
     /**
+     * 内部ヘルパー：列名かコールバックかを判定する
+     * 文字列は常に列名として扱う（'date' などが PHP 関数 date() として呼ばれるのを防ぐ）
+     */
+    protected function _isCallback(mixed $value): bool
+    {
+        return !is_string($value) && is_callable($value);
+    }
+
+    /**
      * 全要素へコールバック適用
      * @template TNext
      * @param callable(T, TKey): TNext $callback
@@ -165,7 +174,7 @@ class Collection implements \ArrayAccess, \IteratorAggregate, \Countable
     {
         $results = [];
         foreach ($this->items as $item) {
-            $key = is_callable($keyBy) ? $keyBy($item) : $this->_dataGet($item, $keyBy);
+            $key = $this->_isCallback($keyBy) ? $keyBy($item) : $this->_dataGet($item, $keyBy);
             /** @var TNewKey $key */
             $results[$key] = $item;
         }
@@ -182,7 +191,7 @@ class Collection implements \ArrayAccess, \IteratorAggregate, \Countable
     {
         $results = [];
         foreach ($this->items as $item) {
-            $key = is_callable($groupBy) ? $groupBy($item) : $this->_dataGet($item, $groupBy);
+            $key = $this->_isCallback($groupBy) ? $groupBy($item) : $this->_dataGet($item, $groupBy);
             /** @var TGroupKey $key */
             $results[$key][] = $item;
         }
@@ -234,7 +243,7 @@ class Collection implements \ArrayAccess, \IteratorAggregate, \Countable
         }
         $sum = 0;
         foreach ($this->items as $item) {
-            $sum += is_callable($callback) ? $callback($item) : $this->_dataGet($item, $callback);
+            $sum += $this->_isCallback($callback) ? $callback($item) : $this->_dataGet($item, $callback);
         }
         return $sum;
     }
