@@ -117,6 +117,18 @@ check "ip: attribute → 403"        "403"                            "$(curl -s
 check "ip: listed (CIDR) → pass"   "ip ok"                          "$(printf '# local\n127.0.0.0/8\n' > "$S/zz_allow.txt"; curl -s $B/zz_ip)"
 rm -f "$P/zz_ip.php" "$P/zz_ip_attr.php" "$S/zz_allow.txt"
 
+# セッション固定対策: 未知の ID は採用しない（use_strict_mode）、Remember-me で復元したら ID を作り直す
+SID() { printf '%s' "$1" | grep -o 'washi_sid=[^;]*' | head -1 | sed 's/washi_sid=//'; }
+FIX="zzfix$(date +%s)$$"   # 毎回新しい値（固定値だと過去の実行で作られたセッションファイルが「既知の ID」になりうる）
+RES="$(curl -s -i -H "Cookie: washi_sid=$FIX" $B/notes/new)"
+check "session: unknown id → new id" "new" "$(N=$(SID "$RES"); [ -n "$N" ] && [ "$N" != "$FIX" ] && echo new || echo kept)"
+printf '<?php\nWashi\\Auth::remember(fn(string $t) => $t === "zztok" ? ["id" => 7] : null);\nreturn fn() => "uid=" . Washi\\Auth::id();\n' > "$P/zz_remember.php"
+OLD="$(SID "$(curl -s -i $B/notes/new)")"
+RES="$(curl -s -i -H "Cookie: washi_sid=$OLD; washi_remember=zztok" $B/zz_remember)"
+check "remember: user restored"      "uid=7" "$RES"
+check "remember: restore → new id"   "new"   "$(N=$(SID "$RES"); [ -n "$N" ] && [ "$N" != "$OLD" ] && echo new || echo kept)"
+rm -f "$P/zz_remember.php"
+
 # 500 は Log::exception 経由でスタックトレースと previous 連鎖を 1 行に残す（本番は画面に出ないため）
 printf '<?php\nreturn fn() => throw new LogicException("kaboom", 0, new RuntimeException("root cause"));\n' > "$ROOT/examples/notes/pages/boom.php"
 curl -s -o /dev/null $B/boom
@@ -130,6 +142,29 @@ check "static css served"          "text/css"                       "$(curl -s -
 check "static css has content"     "body{color:#333}"               "$(curl -s $B/css/app.css)"
 check "php source never served"    "0"                              "$(curl -s $B/index.php | grep -c 'new Washi')"
 stop 8572
+
+# サブディレクトリ設置ではセッション cookie も basePath に限定（同じホストの別アプリへ送らない）
+serve 8573 "$ROOT/examples"
+check "session cookie path = basePath" "path=/notes/public/"       "$(curl -s -i http://127.0.0.1:8573/notes/public/notes/new | grep -i '^Set-Cookie: washi_sid')"
+stop 8573
+
+# SESSION_IDLE / SESSION_LIFETIME: 期限を過ぎたらセッションを捨てて新しい ID（中身は空、Session::expired() が true）
+P="$ROOT/examples/notes/pages"; K="$TMP/ttl"
+printf '<?php\nreturn function () { $n = Washi\\Session::get("n", 0) + 1; Washi\\Session::set("n", $n);\n  return (Washi\\Session::expired() ? "expired" : "alive") . " n=$n"; };\n' > "$P/zz_ttl.php"
+SESSION_IDLE=2 serve 8574 "$ROOT/examples/notes" -t public public/index.php
+rm -f "$K"; curl -s -c "$K" -b "$K" -o /dev/null http://127.0.0.1:8574/zz_ttl
+check "idle: within → kept"         "alive n=2"                      "$(curl -s -c "$K" -b "$K" http://127.0.0.1:8574/zz_ttl)"
+sleep 3
+check "idle: exceeded → expired"    "expired n=1"                    "$(curl -s -c "$K" -b "$K" http://127.0.0.1:8574/zz_ttl)"
+stop 8574
+SESSION_IDLE=10 SESSION_LIFETIME=2 serve 8574 "$ROOT/examples/notes" -t public public/index.php
+rm -f "$K"; curl -s -c "$K" -b "$K" -o /dev/null http://127.0.0.1:8574/zz_ttl
+sleep 1.6
+check "lifetime: within → kept"     "alive n=2"                      "$(curl -s -c "$K" -b "$K" http://127.0.0.1:8574/zz_ttl)"
+sleep 1.6   # 操作は続いていても（idle 内でも）初回から 3 秒超で切れる
+check "lifetime: exceeded → expired" "expired n=1"                   "$(curl -s -c "$K" -b "$K" http://127.0.0.1:8574/zz_ttl)"
+stop 8574
+rm -f "$P/zz_ttl.php"
 
 # where(fn) のグループ条件: 子 Query と親でプレースホルダ名が衝突しないこと、入れ子のグループが
 # SQL に落ちること（どちらも以前は壊れていた。README の既知の問題）

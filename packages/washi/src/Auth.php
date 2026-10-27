@@ -40,7 +40,7 @@ class Auth
         $token = null;
         if ($remember) {
             $token = Security::randomToken(32);
-            setcookie(self::$cookie, $token, ['expires' => time() + 86400 * 30] + self::cookieOptions());
+            setcookie(self::$cookie, $token, ['expires' => time() + 86400 * 30] + Session::cookieOptions());
         }
         if (self::$onLogin) (self::$onLogin)($user, $token);
     }
@@ -50,19 +50,8 @@ class Auth
         self::$user = null;
         self::$loaded = true;
         Session::remove('_auth');
-        if (isset($_COOKIE[self::$cookie])) setcookie(self::$cookie, '', ['expires' => 1] + self::cookieOptions());
+        if (isset($_COOKIE[self::$cookie])) setcookie(self::$cookie, '', ['expires' => 1] + Session::cookieOptions());
         Session::regenerate();
-    }
-
-    /** サブディレクトリ設置なら basePath に限定し、HTTPS なら Secure を付ける（同じホストの別アプリへ送らない・平文で流さない） */
-    private static function cookieOptions(): array
-    {
-        try {
-            $r = App::current()->request();
-            return ['path' => $r->basePath . '/', 'secure' => $r->isHttps(), 'httponly' => true, 'samesite' => 'Lax'];
-        } catch (\LogicException) {
-            return ['path' => '/', 'httponly' => true, 'samesite' => 'Lax'];
-        }
     }
 
     public static function check(): bool
@@ -80,8 +69,9 @@ class Auth
             if ($restored) {
                 self::$user = $restored;
                 Session::set('_auth', $restored);
+                Session::regenerate();   // ログインと同じく ID を作り直す（固定された ID のまま認証済みにしない）
             } else {
-                setcookie(self::$cookie, '', ['expires' => 1] + self::cookieOptions());
+                setcookie(self::$cookie, '', ['expires' => 1] + Session::cookieOptions());
             }
         }
         return self::$user;

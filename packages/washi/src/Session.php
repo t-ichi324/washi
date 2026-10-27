@@ -15,10 +15,16 @@ class Session
     private static bool $started = false;
     private static string $name = 'washi_sid';
     private static ?array $pulled = null;
+    private static int $idle = 0;
+    private static int $lifetime = 0;
+    private static bool $expired = false;
 
-    public static function configure(string $name): void
+    /** $idle / $lifetime は秒（0 で無効）。idle = 最後の操作から、lifetime = ログイン（ID 再生成）から */
+    public static function configure(string $name, int $idle = 0, int $lifetime = 0): void
     {
         self::$name = $name;
+        self::$idle = max(0, $idle);
+        self::$lifetime = max(0, $lifetime);
     }
 
     public static function start(): void
@@ -26,17 +32,56 @@ class Session
         if (self::$started || PHP_SAPI === 'cli') return;
         if (session_status() !== PHP_SESSION_ACTIVE) {
             session_name(self::$name);
-            session_set_cookie_params([
-                'lifetime' => 0, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax',
-                'secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-                    || strtolower($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https',
-            ]);
-            session_start();
+            session_set_cookie_params(['lifetime' => 0] + self::cookieOptions());
+            // strict: 未知の ID（攻撃者が自分で決めた値など）は受け入れず新しい ID を発行する＝セッション固定対策
+            $opts = ['use_strict_mode' => 1];
+            // PHP の GC が期限より先にファイルを消さないよう、保持期間を期限以上にしておく
+            if ($keep = max(self::$idle, self::$lifetime)) $opts['gc_maxlifetime'] = max($keep, (int)ini_get('session.gc_maxlifetime'));
+            session_start($opts);
         }
         self::$started = true;
+        self::enforceTimeouts();
         // flash: 前回リクエストで積まれた分を今回用に取り出し、次回には消える状態にする
         self::$pulled = $_SESSION['_flash'] ?? [];
         unset($_SESSION['_flash']);
+    }
+
+    /**
+     * Washi が発行する cookie 共通の属性。サブディレクトリ設置なら basePath に限定し、HTTPS なら Secure を付ける
+     * （同じホストの別アプリへ送らない・平文で流さない）。
+     */
+    public static function cookieOptions(): array
+    {
+        try {
+            $r = App::current()->request();
+            return ['path' => $r->basePath . '/', 'secure' => $r->isHttps(), 'httponly' => true, 'samesite' => 'Lax'];
+        } catch (\LogicException) {
+            return ['path' => '/', 'httponly' => true, 'samesite' => 'Lax'];
+        }
+    }
+
+    /** 期限切れなら中身を捨てて新しい ID にする（＝ログアウト扱い）。期限内なら最終操作時刻を更新 */
+    private static function enforceTimeouts(): void
+    {
+        if (!self::$idle && !self::$lifetime) return;
+        $now = time();
+        $last = $_SESSION['_last'] ?? null;
+        $born = $_SESSION['_born'] ?? null;
+        if ((self::$idle && $last !== null && $now - $last > self::$idle)
+            || (self::$lifetime && $born !== null && $now - $born > self::$lifetime)) {
+            $_SESSION = [];
+            if (session_status() === PHP_SESSION_ACTIVE) session_regenerate_id(true);
+            self::$expired = true;
+        }
+        $_SESSION['_born'] ??= $now;
+        $_SESSION['_last'] = $now;
+    }
+
+    /** このリクエストで期限切れによりセッションが破棄されたか（「時間切れのため再ログインしてください」の表示用） */
+    public static function expired(): bool
+    {
+        self::start();
+        return self::$expired;
     }
 
     public static function isActive(): bool
@@ -72,6 +117,7 @@ class Session
     {
         self::start();
         if (session_status() === PHP_SESSION_ACTIVE) session_regenerate_id(true);
+        if (self::$lifetime) $_SESSION['_born'] = time();   // 絶対期限はログイン・ログアウトの時点から数え直す
     }
 
     public static function destroy(): void

@@ -65,6 +65,8 @@ class App
             'layout'         => '_layout',
             'login_page'     => Env::get('APP_LOGIN_PAGE', '/login'),
             'session_name'   => Env::get('SESSION_NAME', 'washi_sid'),
+            'session_idle'   => Env::int('SESSION_IDLE', 0),       // 秒。無操作がこれを超えたらセッション破棄。0 で無効
+            'session_lifetime' => Env::int('SESSION_LIFETIME', 0), // 秒。ログイン（ID 再生成）からこれを超えたら破棄。0 で無効
             'csrf_token'     => '_token',
             'log'            => Env::get('LOG_TARGET', 'storage'),   // 'stderr' | 'storage' | absolute dir
             'trusted_proxies'=> Env::get('TRUSTED_PROXIES', ''),
@@ -87,7 +89,7 @@ class App
         $logTarget = $this->config['log'];
         Log::to($logTarget === 'storage' ? $this->path($this->config['storage'], 'log') : $logTarget,
             $this->config['debug'] ? 'debug' : 'info');
-        Session::configure($this->config['session_name']);
+        Session::configure($this->config['session_name'], $this->config['session_idle'], $this->config['session_lifetime']);
         Security::configure($this->config['csrf_token']);
         View::configure($this->path($this->config['views']), $this->config['layout']);
         // lib/ はサブフォルダも探す（名前空間なしでも可）。本番は対応表を storage/cache にキャッシュ

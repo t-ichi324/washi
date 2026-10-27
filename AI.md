@@ -48,7 +48,7 @@
 | リクエスト | GET + POST + JSON body を統合した型付き取得 `str/int/float/bool/arr/all/only/file`、`validate([...])`、`wantsJson`、`isAjax`、`_method` オーバーライド、信頼プロキシ考慮の `ip()` | `Request` |
 | レスポンス | `html/json/redirect/text/file/download/empty`、`->status()->header()->cookie()`。戻り値の自動変換。ステータス行は理由句付きで送る（419 などが Apache で 500 に化けない） | `Response`, `App::normalize` |
 | ビュー | 素の PHP、`extract` された変数、レイアウト自動包み（既定は `View::layout()` で変更可）、`partial()`、`View::share()`、セクション `View::start()/stop()/section()` | `View` |
-| セッション | 遅延開始、HttpOnly/SameSite=Lax/Secure 自動、flash（1 回だけ読める値） | `Session` |
+| セッション | 遅延開始、HttpOnly/SameSite=Lax/Secure 自動、cookie は basePath 限定、`use_strict_mode`（未知の ID は採用しない）、ログイン・ログアウト・Remember-me 復元時に ID 再生成、opt-in のタイムアウト（`SESSION_IDLE` 無操作 / `SESSION_LIFETIME` ログインから。切れたら中身を捨てて新 ID、`Session::expired()` で判定。Remember-me の cookie があれば自動で再ログインされる）、flash（1 回だけ読める値） | `Session` |
 | 認証 | `Auth::login($user)` に任意のオブジェクト/配列、`check/user/id/roles/hasRole`、Remember-me（opt-in、§5 のレシピ。cookie は basePath 限定・HTTPS なら Secure） | `Auth` |
 | IP 許可リスト | `whitelist.txt`（1 行 1 件、IP か CIDR、IPv4/IPv6、`#` コメント）。無い・空なら制限なし。ページ/フォルダごと閉じるなら `->ipAllowlist()`、ログイン時だけ弾くなら `ip_allowed()` で判定して `back()` | `IpAllowlist`, `Middleware/RequireIp` |
 | セキュリティ | CSRF トークン（セッション単位、`csrf_field()`、ヘッダ `X-CSRF-TOKEN` も可）、`password_hash` ラッパ、既定のセキュリティヘッダ、pages のパストラバーサル防止、外部 URL への `url()` 素通し防止なし（注: `redirect()` は与えた URL をそのまま使う） | `Security`, `App` |
@@ -349,6 +349,8 @@ Washi\Db\Db::transaction(fn() => ...);
 | `layout` | _layout | | `view()` の既定レイアウト |
 | `login_page` | /login | `APP_LOGIN_PAGE` | `->auth()` の遷移先 |
 | `session_name` | washi_sid | `SESSION_NAME` | |
+| `session_idle` | 0 | `SESSION_IDLE` | 秒。無操作がこれを超えたらセッションを破棄（ログアウト扱い）。0 で無効 |
+| `session_lifetime` | 0 | `SESSION_LIFETIME` | 秒。ログイン（ID 再生成）からこれを超えたら操作中でも破棄。0 で無効 |
 | `csrf_token` | _token | | フィールド名。環境で変わらない値なので配列に書いてよい（既存フォームの hidden 名に合わせるなど） |
 | `log` | storage | `LOG_TARGET` | `storage` → storage/log/日付.log、`stderr`、または絶対パス |
 | `url` | '' | `APP_URL` | `abs_url()` の起点（`https://example.jp/app`）。空ならリクエストの Host から |
