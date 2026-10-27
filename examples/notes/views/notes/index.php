@@ -1,3 +1,7 @@
+<?php
+/** @var string                       $title */
+/** @var \Washi\Collection<int, Note> $notes */
+?>
 <h1><?= h($title) ?></h1>
 <?php if ($notes->isEmpty()): ?>
   <p>まだメモがありません。<a href="<?= url('/notes/new') ?>">最初のメモを書く</a></p>

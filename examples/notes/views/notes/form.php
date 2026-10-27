@@ -1,3 +1,7 @@
+<?php
+/** @var string $title */
+/** @var Note   $note */
+?>
 <h1><?= h($title) ?></h1>
 <form method="post">
   <?= csrf_field() ?>

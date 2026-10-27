@@ -1,3 +1,7 @@
+<?php
+/** @var ?string $title */  // ページ側で渡したとき
+/** @var string  $content */  // テンプレートの描画結果（View::page が渡す）
+?>
 <!doctype html>
 <html lang="ja">
 <head>

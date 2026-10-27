@@ -81,7 +81,7 @@ myapp/
 │   ├── notes/new.post.php  POST /notes/new
 │   ├── notes/edit.php      GET  /notes/edit/{id}   ← 余ったセグメントが引数 fn(int $id)
 │   └── api/notes.php       GET  /api/notes         ← Paginated を返すと JSON
-├── views/                  ← 素の PHP。view('notes/form') = views/notes/form.php
+├── views/                  ← 素の PHP。view('notes/form') = views/notes/form.php。先頭に受け取る変数の `@var`（§5）
 │   ├── _layout.php         $content と $title を受ける。`_` 始まりは pages から到達不可
 │   ├── _error.php          $status $message $exception を受ける（任意）
 │   └── notes/{index,form}.php
@@ -329,6 +329,15 @@ Item::query()->rel(Category::class)->all();   // N:1 Eager Load → $item->rel(C
 Washi\Db\Db::table('logs')->insert([...]);    // Entity を作らず素のテーブル操作
 Washi\Db\Db::transaction(fn() => ...);
 ```
+
+**view が受け取る変数は先頭に `@var` で書く**（約束事）: `view()` は配列を `extract()` で変数にするので、書かないとエディタ（Intelephense など）が未定義変数として警告し、補完も効かない。1 変数 1 行。実行時には何もしない
+```php
+<?php
+/** @var string                       $title */
+/** @var \Washi\Collection<int, Note> $notes */   // Collection は @template 付きなので foreach の $note が Note 型になる
+?>
+```
+ページ側で渡す変数と食い違ってもエディタは気づけないので、渡す配列を変えたら view の `@var` も直す。
 
 **レイアウトとセクション**
 ```php
