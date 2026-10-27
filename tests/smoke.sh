@@ -290,6 +290,18 @@ while IFS= read -r line; do
   esac
 done <<< "$IOUT"
 
+# Entity: 保存対象は宣言済みプロパティだけ（JOIN の列・打ち間違いは INSERT / UPDATE に混ざらない）
+echo
+echo "== washi/db Entity: 保存対象の列"
+EOUT="$(cd "$ROOT" && php tests/entity_columns.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+    *)        fail "entity_columns.php: $line";;
+  esac
+done <<< "$EOUT"
+
 # RateLimiter / FileRateLimitStore: 期間・掃除・同時アクセス（flock）・保存先の差し替え
 echo
 echo "== washi RateLimiter"

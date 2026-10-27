@@ -14,7 +14,8 @@ use Washi\Collection;
  * - Table name defaults to snake_case(ClassName) + 's'; override `protected static ?string $table`.
  * - Static finders (`find`, `where`, `all`, ...) return typed instances / `Collection<static>`.
  * - Instance methods `save()` / `delete()` / `fresh()` use dirty-tracking (only changed columns are UPDATEd).
- * - Extra SELECT columns (joins, aggregates) land in dynamic properties and are included in `toArray()`.
+ * - Extra SELECT columns (joins, aggregates) land in dynamic properties and are included in `toArray()`,
+ *   but never in INSERT/UPDATE: only declared properties are columns (a typo like `$e->titel = ...` is not saved).
  * - Relations loaded via `Query::rel()` / `relMany()` live separately and never leak into UPDATE.
  * - `findOrFail()` throws {@see NotFoundException}; the HTTP layer maps it to 404.
  */
@@ -74,13 +75,19 @@ abstract class Entity implements \JsonSerializable
     /** 宣言済み public プロパティ + 動的列。リレーションは含まない */
     public function toArray(): array
     {
+        return array_merge($this->columnValues(), $this->_dynamicProperties);
+    }
+
+    /** 宣言済み public プロパティ＝テーブルの列。save() / getDirty() の対象はこれだけ（JOIN の列や動的プロパティは保存しない） */
+    private function columnValues(): array
+    {
         $res = [];
         foreach ((new \ReflectionObject($this))->getProperties(\ReflectionProperty::IS_PUBLIC) as $prop) {
             if ($prop->isStatic()) continue;
             $name = $prop->getName();
             $res[$name] = $prop->isInitialized($this) ? $this->$name : null;
         }
-        return array_merge($res, $this->_dynamicProperties);
+        return $res;
     }
 
     public function __get(string $name): mixed
@@ -307,14 +314,14 @@ abstract class Entity implements \JsonSerializable
     /** 現在の状態を初期状態として同期する */
     public function syncOriginal(): static
     {
-        $this->_original = $this->toArray();
+        $this->_original = $this->columnValues();
         return $this;
     }
 
     /** 変更されたデータ（Dirty Data）のみを取得 */
     public function getDirty(): array
     {
-        $current = $this->toArray();
+        $current = $this->columnValues();
         // まだ初期状態がない（新規）場合は null 以外をすべて対象にする
         if ($this->_original === null) {
             return array_filter($current, fn($v) => $v !== null);
@@ -353,7 +360,7 @@ abstract class Entity implements \JsonSerializable
         }
 
         // INSERT: null 以外を対象（DB デフォルト値を活かす）
-        $data = $this->toArray();
+        $data = $this->columnValues();
         if (isset($data[$pk]) && ($data[$pk] === null || $data[$pk] === '' || $data[$pk] === 0)) {
             unset($data[$pk]);
         }

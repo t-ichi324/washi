@@ -329,6 +329,16 @@ Item::query()->rel(Category::class)->all();   // N:1 Eager Load → $item->rel(C
 Washi\Db\Db::table('logs')->insert([...]);    // Entity を作らず素のテーブル操作
 Washi\Db\Db::transaction(fn() => ...);
 ```
+テーブルの列は型付きプロパティで宣言する（エディタ補完と実行時の型検査が両方効く）。Laravel のように列をクラスコメントの `@property` に移して `__get` で読む形にはしない（型検査が消え、`toArray()` や変更検知がコメントの解析頼みになる）。
+`save()` が INSERT / UPDATE するのも宣言済みプロパティだけ。JOIN・集計の列や打ち間違い（`$i->nmae = ...`）は `toArray()` / JSON には出るが保存されない。
+`@property-read` を書くのは、JOIN・集計で増える列など宣言していないプロパティ（`__get` で読まれるもの）だけ:
+```php
+/**
+ * search() の JOIN で入る列
+ * @property-read string|null $kunren_name
+ */
+class Meibo extends Washi\Db\Entity { public ?int $id = null; /* ... */ }
+```
 
 **view が受け取る変数は先頭に `@var` で書く**（約束事）: `view()` は配列を `extract()` で変数にするので、書かないとエディタ（Intelephense など）が未定義変数として警告し、補完も効かない。1 変数 1 行。実行時には何もしない
 ```php
