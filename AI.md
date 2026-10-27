@@ -44,14 +44,15 @@
 | ルーティング | `pages/` ファイル解決（最長一致、HTTP メソッド別ファイル `edit.post.php`）、明示ルート `$app->get('/x/{id}', fn)`、`{id:\d+}` 正規表現、405 判定 | `App` |
 | ハンドラ | クロージャ引数の自動解決（URL パラメータを名前→位置で束縛、`int`/`float` 検証、`Request` 型注入、`...$rest` で残り全部）。pages の余りセグメントを使い切らなければ 404 | `Handler` |
 | ミドルウェア | `fn(Request, Closure $next)` 形式（`$next()` は常に `Response` を返す）。グローバル `$app->use()`、フォルダ単位 `pages/admin/_access.php`、ハンドラ単位 `->use()`、PHP Attribute `#[RequireAuth]` も可 | `Handler`, `App`, `Middleware/*` |
-| 組み込みミドルウェア | `->auth()` 未ログインをログイン画面へ、`->guest()`、`->roles('admin')`、`->csrf()`、`->ipAllowlist()` whitelist.txt に無い送信元を 403 | `Middleware/*` |
+| 組み込みミドルウェア | `->auth()` 未ログインをログイン画面へ、`->guest()`、`->roles('admin')`、`->csrf()`、`->ipAllowlist()` whitelist.txt に無い送信元を 403、`->throttle(5, 900, by: 'user')` 回数超過で 429 + Retry-After | `Middleware/*` |
 | リクエスト | GET + POST + JSON body を統合した型付き取得 `str/int/float/bool/arr/all/only/file`、`validate([...])`、`wantsJson`、`isAjax`、`_method` オーバーライド、信頼プロキシ考慮の `ip()` | `Request` |
 | レスポンス | `html/json/redirect/text/file/download/empty`、`->status()->header()->cookie()`。戻り値の自動変換。ステータス行は理由句付きで送る（419 などが Apache で 500 に化けない） | `Response`, `App::normalize` |
 | ビュー | 素の PHP、`extract` された変数、レイアウト自動包み（既定は `View::layout()` で変更可）、`partial()`、`View::share()`、セクション `View::start()/stop()/section()` | `View` |
 | セッション | 遅延開始、HttpOnly/SameSite=Lax/Secure 自動、cookie は basePath 限定、`use_strict_mode`（未知の ID は採用しない）、ログイン・ログアウト・Remember-me 復元時に ID 再生成、opt-in のタイムアウト（`SESSION_IDLE` 無操作 / `SESSION_LIFETIME` ログインから。切れたら中身を捨てて新 ID、`Session::expired()` で判定。Remember-me の cookie があれば自動で再ログインされる）、flash（1 回だけ読める値） | `Session` |
 | 認証 | `Auth::login($user)` に任意のオブジェクト/配列、`check/user/id/roles/hasRole`、Remember-me（opt-in、§5 のレシピ。cookie は basePath 限定・HTTPS なら Secure） | `Auth` |
 | IP 許可リスト | `whitelist.txt`（1 行 1 件、IP か CIDR、IPv4/IPv6、`#` コメント）。無い・空なら制限なし。ページ/フォルダごと閉じるなら `->ipAllowlist()`、ログイン時だけ弾くなら `ip_allowed()` で判定して `back()` | `IpAllowlist`, `Middleware/RequireIp` |
-| セキュリティ | CSRF トークン（セッション単位、`csrf_field()`、ヘッダ `X-CSRF-TOKEN` も可）、`password_hash` ラッパ、既定のセキュリティヘッダ、pages のパストラバーサル防止、外部 URL への `url()` 素通し防止なし（注: `redirect()` は与えた URL をそのまま使う） | `Security`, `App` |
+| 回数制限 | `->throttle($max, $秒, by: '入力名')` は送信元 IP + メソッド + パス（+ 入力値）ごとに全リクエストを数え、超えたら 429。失敗だけ数えるなら `RateLimiter::hit/tooMany/remaining/availableIn/clear` を直接。保存先は `storage/cache/throttle/`（flock、サーバー 1 台向け）、DB などは `RateLimitStore` を実装して `RateLimiter::store()` で差し替え（§5 のレシピ） | `RateLimiter`, `FileRateLimitStore`, `Middleware/Throttle` |
+| セキュリティ | CSRF トークン（セッション単位、`csrf_field()`、ヘッダ `X-CSRF-TOKEN` も可）、`password_hash` ラッパ、既定のセキュリティヘッダ、pages のパストラバーサル防止、オープンリダイレクト防止（`redirect()` / `back()` は別ホスト・`//x`・`/\x` を `/` に差し替えて warning ログ。外部へ飛ばすなら `Response::redirect($url)`。判定は `App::isLocalUrl()`）、`orderBy()` は列名を常にクォート（式は `orderByRaw()`） | `Security`, `App` |
 | バリデーション | `$r->validate(['email' => 'required\|email'])`（失敗で back() 相当、JSON なら 422）と `Validator::from($r)->rule('email', 'メール')->required()->email()`（チェーン）。判定は共通。ルール: required email url numeric integer date confirmed min max minValue maxValue between regex in + `with(fn)`。日本語文言、`Validator::messages()` で差し替え | `Validator`, `FieldRules`, `ValidationException` |
 | フォーム補助 | `back($errors)` でエラーと入力値を flash → `err()` `old()` `has_err()` で再表示 | helpers |
 | DB | PDO クエリビルダ（where/join/rel/relMany/page/upsert/chunk など）、型付き `Entity`（find/where/save/delete、dirty tracking、リレーション格納）、`Paginated`、SQL ファイルマイグレーション、SQLite/MySQL/PostgreSQL、ネストトランザクション、クエリ観測フック | `washi/db` |
@@ -230,6 +231,43 @@ if (!ip_allowed()) return back(['id' => 'このIP(' . client_ip() . ')ではロ�
 ```
 ロードバランサ・CDN 越しなら `TRUSTED_PROXIES` にその IP を書く（未設定だと全員がプロキシの IP に見える。`*` は X-Forwarded-For の偽装で一覧をすり抜けられるので使わない）。
 
+**ログイン試行の回数制限**: 手軽なのは `->throttle()`（成否に関係なく数える）。失敗だけ数えるなら RateLimiter を直接
+```php
+// pages/login.post.php   15 分に 5 回まで（全リクエストを数える）。超えたら 429（views/_error.429.php で画面を変えられる）
+return page()->guest()->csrf()->throttle(5, 900, by: 'user')->then(fn(Washi\Request $r) => ...);
+
+// 失敗だけ数え、ログイン画面にメッセージを出す
+$key = 'login:' . mb_strtolower($r->str('user')) . '|' . client_ip();
+if (Washi\RateLimiter::tooMany($key, 5)) return back(['user' => '試行回数が多すぎます。' . ceil(Washi\RateLimiter::availableIn($key) / 60) . '分後にお試しください。']);
+if (!$u || !password_verify($r->str('password'), $u->password)) { Washi\RateLimiter::hit($key, 900); return back(['user' => 'IDかパスワードが違います。']); }
+Washi\RateLimiter::clear($key);
+```
+キーはアカウント + IP にする（アカウントだけだと他人を締め出せる、IP だけだと共有回線の全員が巻き込まれる）。
+複数台構成などで DB に置くなら保存先だけ差し替える（`->throttle()` も同じ保存先を使う）:
+```php
+// lib/DbRateLimitStore.php   テーブル: rate_limits(k TEXT PRIMARY KEY, hits INT, reset_at INT)
+class DbRateLimitStore implements Washi\RateLimitStore
+{
+    public function increment(string $key, int $decaySeconds): array
+    {
+        return Washi\Db\Db::transaction(function () use ($key, $decaySeconds) {   // MySQL/PG なら SELECT ... FOR UPDATE で行ロック
+            [$n, $at] = $this->peek($key);
+            $row = $at ? [$n + 1, $at] : [1, time() + $decaySeconds];
+            Washi\Db\Db::table('rate_limits')->upsert(['k' => $key, 'hits' => $row[0], 'reset_at' => $row[1]], ['k']);
+            return $row;
+        });
+    }
+    public function peek(string $key): array
+    {
+        $r = Washi\Db\Db::table('rate_limits')->where('k', $key)->where('reset_at', '>', time())->asRaw()->first();
+        return $r ? [(int)$r->hits, (int)$r->reset_at] : [0, 0];
+    }
+    public function forget(string $key): void { Washi\Db\Db::table('rate_limits')->where('k', $key)->delete(); }
+}
+// public/index.php（new App の後）:  Washi\RateLimiter::store(new DbRateLimitStore());
+// 期限切れ行の掃除は cron などで DELETE FROM rate_limits WHERE reset_at < 現在時刻
+```
+
 **ログイン状態を保持する（Remember-me）**: トークンの保存先はアプリが持つ。ハッシュで保存し、cookie の生値と照合する
 ```php
 // public/index.php（new App の後）
@@ -285,6 +323,7 @@ class Item extends Washi\Db\Entity {
     protected static function defaultScope(Washi\Db\Query $q): void { $q->where('items.deleted_at', null); } // 任意
 }
 Item::find(1); Item::findOrFail(1); Item::where('price', '>', 100)->orderBy('price')->all();
+Item::query()->orderBy($r->str('sort'))->all();  // 列名は常にクォート。空白・括弧入りは例外。式は ->orderByRaw('RANDOM()')（入力を混ぜない）
 $i = new Item(['name' => 'a']); $i->save();  $i->price = 5; $i->save();  $i->delete();
 Item::query()->rel(Category::class)->all();   // N:1 Eager Load → $item->rel(Category::class)?->name
 Washi\Db\Db::table('logs')->insert([...]);    // Entity を作らず素のテーブル操作
@@ -317,8 +356,8 @@ Washi\Db\Db::transaction(fn() => ...);
 | `render($tpl, $data)` | string | レイアウトなしの文字列 |
 | `partial($tpl, $data)` | void | テンプレート内で別テンプレートを echo |
 | `title($t)` | string | レイアウトの `$title` を設定 |
-| `redirect($to, 302)` | `Response` | `url()` を通す |
-| `back($errors=[], $withInput=true)` | `Response` | Referer へ。`_errors` `_old` を flash |
+| `redirect($to, 302)` | `Response` | `url()` を通す。外部 URL は `/` に差し替え（`redirect($r->str('next'))` が安全）。意図して外部へ飛ばすなら `Response::redirect($url)` |
+| `back($errors=[], $withInput=true)` | `Response` | Referer へ（別ホストの Referer なら `/`）。`_errors` `_old` を flash |
 | `json($data, 200)` | `Response` | |
 | `abort($status, $msg='')` | never | `HttpException` |
 | `request()` / `input($k, $d=null)` | | 現在の Request / 統合入力 |
@@ -411,6 +450,7 @@ DB 層がログやトレースを必要とする場合は `Db::listen(fn($sql, $
 | `LibAutoloader.php` | lib/ の自動読み込み（App が登録）。名前空間つきはパス、それ以外はファイル名の対応表で探す。本番は storage/cache にキャッシュ |
 | `IpAllowlist.php` | whitelist.txt の読み込みと IP/CIDR 照合（`IpAllowlist::matches` が唯一の判定箇所）。`RequireIp` と `ip_allowed()` はここを呼ぶだけ |
 | `Validator.php` / `FieldRules.php` | 入力・エラー・back() を持つ Validator と、1 フィールドのルールと判定（FieldRules::check が唯一の判定箇所）。`ValidationException` は App が back() / 422 に変える |
+| `RateLimiter.php` `RateLimitStore.php` `FileRateLimitStore.php` | 回数制限。判定は RateLimiter、保存は RateLimitStore（既定はファイル + flock）。`Middleware/Throttle` は RateLimiter を呼ぶだけ |
 | `Middleware/*` | それぞれ 1 クラス 1 責務。`#[\Attribute]` 付きなので closure に付けられる |
 
 ---
@@ -477,3 +517,4 @@ fzr を知らなくても Washi を扱う上で困ることはない。
 | `with(fn)` と `required` / `confirmed` 以外のルールは、値が空なら検査しない | 任意項目に「入力されたら形式を検査」を書けるようにするため（Laravel の implicit rule と同じ）。代わりに確認用フィールドの一致は `with()` で書くと空同士で素通りするので、専用の `confirmed` を用意し空でも検査する |
 | lib/ はサブフォルダも探し、名前空間なしのクラスはファイル名で引く。同名は例外 | lib/ が 30 クラスを超えると役割別に分けたくなるが、そのためだけに名前空間を付けると pages/・views/ の全ファイルに use が要る（reserv.c-aca で約 150 ファイル）。フォルダ構成を要求しない方針どおり、分け方はアプリに任せる。同名を先勝ちで読むと、フォルダを足しただけで別のクラスが静かに読まれるので重複は例外にする。対応表は本番だけキャッシュし、ミスや消えたパスで自動的に作り直す（デプロイ手順にキャッシュ削除を増やさない）。検証は `tests/lib_autoload.php` |
 | IP 許可リストは無い・空なら制限なし（fail-open）。ミドルウェアは 403 だけ、ログイン時に弾くのは `ip_allowed()` でアプリが書く | `_access.php` を `.` 始まりにしなかったのは消えると黙って全公開になるからだが、許可リストは逆で、fail-closed だと一覧を置く前の初回デプロイや書き損じで全員が締め出され、サーバーに入れない限り直せない。一覧は環境ごとの値でデプロイから外すので「コードだけ先に入れ、許可が出たら一覧を置く」運用にもなる。書式は PHP 5 系の旧システム（kunrenshien の `common/ipguard.php`）と同じにして、運用を揃える。弾き方（403 か、ログイン画面にメッセージ）は画面ごとに違うので、FW は判定と 403 だけを持つ。検証は `tests/ip_allowlist.php` と smoke.sh の `ip:` |
+| 回数制限の保存先は既定でファイル、DB などは `RateLimitStore` を実装して差し替え（FW は DB に依存しない） | DB を既定にするとテーブル作成（マイグレーション）が前提になり、`->throttle()` を 1 行足すだけでは動かない。ファイルなら設定ゼロで動く。既存アプリはどれもサーバー 1 台で、セッションも PHP 標準のファイルのままにしたのと同じ割り切り。差し替え口（3 メソッド）だけ用意して、`->throttle()` と 429 応答は保存先に関係なく使えるようにした。ミドルウェアはハンドラの前に動くので成否を知らず、全リクエストを数える。失敗だけ数えるのは RateLimiter を直接呼ぶ。429 の Retry-After を付けるため `HttpException` に任意のヘッダを持たせた。検証は `tests/rate_limiter.php`（flock の取りこぼしを 8 プロセス並列で確認）と smoke.sh の `throttle:` |

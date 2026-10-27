@@ -7,6 +7,7 @@ use Washi\Middleware\RequireAuth;
 use Washi\Middleware\RequireGuest;
 use Washi\Middleware\RequireIp;
 use Washi\Middleware\RequireRole;
+use Washi\Middleware\Throttle;
 use Washi\Middleware\VerifyCsrf;
 
 /**
@@ -57,6 +58,8 @@ class Handler
     public function roles(string ...$roles): static        { return $this->use(new RequireRole(...$roles)); }
     public function csrf(): static                          { return $this->use(new VerifyCsrf()); }
     public function ipAllowlist(?string $file = null): static { return $this->use(new RequireIp($file)); }
+    /** $decaySeconds 秒に $max 回まで（送信元 IP + URL ごと、`by` で入力値も）。超えたら 429 */
+    public function throttle(int $max = 60, int $decaySeconds = 60, ?string $by = null): static { return $this->use(new Throttle($max, $decaySeconds, $by)); }
 
     /** @return list<callable> middleware added so far (how a pages/…/_access.php hands over its chain) */
     public function middleware(): array { return $this->middleware; }

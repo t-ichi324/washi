@@ -482,20 +482,32 @@ class Query
     }
 
     /**
-     * ORDER BY
+     * ORDER BY 列名。'name DESC' のように方向付きでも可。列名は常にクォートするので、
+     * 利用者の入力（?sort=...）が混ざっても SQL にはならない。式（関数・CASE など）は orderByRaw() へ
      *
      * @return self<T>
+     * @throws \InvalidArgumentException 列名に空白や括弧が含まれるとき
      */
     public function orderBy(string $column, string $direction = 'ASC'): self
     {
-        // 'name DESC' のように方向まで書かれた生指定はそのまま使う（二重に方向を付けない）
-        if (preg_match('/\s+(ASC|DESC)\s*$/i', $column)) {
-            $expr = $column;
-        } else {
-            $direction = strtoupper($direction) === 'DESC' ? 'DESC' : 'ASC';
-            $expr = $this->quoteIdentifier($column) . " {$direction}";
+        if (preg_match('/^\s*(\S+)\s+(ASC|DESC)\s*$/i', $column, $m)) [, $column, $direction] = $m;
+        $column = trim($column);
+        if ($column === '' || preg_match('/[\s()]/', $column)) {
+            throw new \InvalidArgumentException("orderBy() には列名だけを渡す（式は orderByRaw() へ）: {$column}");
         }
-        $this->orderBy = ($this->orderBy ? $this->orderBy . ', ' : '') . $expr;
+        $direction = strtoupper($direction) === 'DESC' ? 'DESC' : 'ASC';
+        return $this->orderByRaw($this->quoteIdentifier($column) . " {$direction}");
+    }
+
+    /**
+     * ORDER BY に SQL をそのまま足す（'RANDOM()'、'FIELD(status, ...)' など）。
+     * クォートもバインドもしないので、利用者の入力を混ぜないこと
+     *
+     * @return self<T>
+     */
+    public function orderByRaw(string $sql): self
+    {
+        $this->orderBy = ($this->orderBy ? $this->orderBy . ', ' : '') . $sql;
         return $this;
     }
 

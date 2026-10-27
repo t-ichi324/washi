@@ -95,7 +95,19 @@ if (!function_exists('abs_url')) {
 }
 
 if (!function_exists('redirect')) {
-    function redirect(string $to, int $status = 302): Response { return Response::redirect(url($to), $status); }
+    /**
+     * サイト内へのリダイレクト。外部 URL（別ホスト、'//evil'、'/\evil'）は '/' に差し替えて警告ログを残す＝
+     * `redirect($r->str('next'))` と書いてもフィッシングの踏み台にならない。外部へ飛ばすなら Response::redirect($url)
+     */
+    function redirect(string $to, int $status = 302): Response
+    {
+        $url = url($to);
+        if (!App::current()->isLocalUrl($url)) {
+            \Washi\Log::warning('redirect: external URL replaced with /', ['to' => $to]);
+            $url = url('/');
+        }
+        return Response::redirect($url, $status);
+    }
 }
 
 if (!function_exists('back')) {
@@ -104,7 +116,8 @@ if (!function_exists('back')) {
     {
         if ($errors) Session::flash('_errors', $errors);
         if ($withInput) Session::flash('_old', request()->all());
-        return Response::redirect(request()->referer() ?: url('/'));
+        $ref = request()->referer();
+        return Response::redirect($ref !== null && App::current()->isLocalUrl($ref) ? $ref : url('/'));
     }
 }
 

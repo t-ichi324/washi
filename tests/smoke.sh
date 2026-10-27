@@ -129,6 +129,37 @@ check "remember: user restored"      "uid=7" "$RES"
 check "remember: restore → new id"   "new"   "$(N=$(SID "$RES"); [ -n "$N" ] && [ "$N" != "$OLD" ] && echo new || echo kept)"
 rm -f "$P/zz_remember.php"
 
+# オープンリダイレクト対策: redirect() / back() は外部 URL を '/' に差し替える。サイト内と同じ Host の絶対 URL は通す
+printf '<?php\nreturn fn(Washi\\Request $r) => redirect($r->str("to"));\n' > "$P/zz_redir.php"
+printf '<?php\nreturn fn() => back();\n' > "$P/zz_back.php"
+LOC() { curl -s -i "$B/zz_redir?to=$1" | grep -i '^Location:' | tr -d '\r'; }
+check "redirect: internal path kept"  "Location: /notes/new"          "$(LOC %2Fnotes%2Fnew)"
+check "redirect: same host kept"      "Location: http://127.0.0.1:8572/about" "$(LOC http%3A%2F%2F127.0.0.1%3A8572%2Fabout)"
+check "redirect: other host → /"      "Location: /"                    "$(LOC https%3A%2F%2Fevil.example%2Fx)"
+check "redirect: //host → /"          "Location: /"                    "$(LOC %2F%2Fevil.example)"
+check "redirect: /\\host → /"         "Location: /"                    "$(LOC %2F%5Cevil.example)"
+check "redirect: tab trick → /"       "Location: /"                    "$(LOC %2F%09%2Fevil.example)"
+check "redirect: javascript: → /"     "Location: /"                    "$(LOC javascript%3Aalert%281%29)"
+check "back: same-site referer kept"  "Location: http://127.0.0.1:8572/about" "$(curl -s -i -H 'Referer: http://127.0.0.1:8572/about' $B/zz_back | tr -d '\r')"
+check "back: external referer → /"    "Location: /"                    "$(curl -s -i -H 'Referer: https://evil.example/' $B/zz_back | grep -i '^Location:' | tr -d '\r')"
+rm -f "$P/zz_redir.php" "$P/zz_back.php"
+
+# ->throttle(): 送信元 + URL ごとに数え、超えたら 429 + Retry-After。by: で入力値ごとに分かれる
+rm -rf "$ROOT/examples/notes/storage/cache/throttle"
+printf '<?php\nreturn page()->throttle(2, 60)->then(fn() => "ok");\n' > "$P/zz_thr.php"
+printf '<?php\nreturn page()->throttle(1, 60, by: "user")->then(fn() => "ok");\n' > "$P/zz_thr_by.php"
+printf '<?php\nreturn #[Washi\\Middleware\\Throttle(1, 60)] fn() => "ok";\n' > "$P/zz_thr_attr.php"
+CODE() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+check "throttle: within limit"     "200 200"                        "$(CODE $B/zz_thr) $(CODE $B/zz_thr)"
+RES="$(curl -s -i $B/zz_thr)"
+check "throttle: over limit → 429" "429 Too Many Requests"          "$RES"
+check "throttle: Retry-After"      "Retry-After: "                   "$RES"
+check "throttle: JSON 429"         '"status":429'                   "$(curl -s -H 'Accept: application/json' $B/zz_thr)"
+check "throttle: per URL"          "200"                            "$(CODE $B/zz_thr_attr)"
+check "throttle: attribute → 429"  "429"                            "$(CODE $B/zz_thr_attr)"
+check "throttle: by input"         "200 429 200"                    "$(CODE -d user=Alice $B/zz_thr_by) $(CODE -d user=alice $B/zz_thr_by) $(CODE -d user=bob $B/zz_thr_by)"
+rm -rf "$P/zz_thr.php" "$P/zz_thr_by.php" "$P/zz_thr_attr.php" "$ROOT/examples/notes/storage/cache/throttle"
+
 # 500 は Log::exception 経由でスタックトレースと previous 連鎖を 1 行に残す（本番は画面に出ないため）
 printf '<?php\nreturn fn() => throw new LogicException("kaboom", 0, new RuntimeException("root cause"));\n' > "$ROOT/examples/notes/pages/boom.php"
 curl -s -o /dev/null $B/boom
@@ -258,5 +289,17 @@ while IFS= read -r line; do
     *)        fail "ip_allowlist.php: $line";;
   esac
 done <<< "$IOUT"
+
+# RateLimiter / FileRateLimitStore: 期間・掃除・同時アクセス（flock）・保存先の差し替え
+echo
+echo "== washi RateLimiter"
+ROUT="$(cd "$ROOT" && php tests/rate_limiter.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+    *)        fail "rate_limiter.php: $line";;
+  esac
+done <<< "$ROUT"
 
 echo; echo "passed: $PASS  failed: $FAIL"; rm -rf "$TMP"; [ "$FAIL" -eq 0 ]

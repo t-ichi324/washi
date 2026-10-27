@@ -139,6 +139,22 @@ class App
     }
 
     /**
+     * 同じサイト内を指す URL か（redirect() / back() のオープンリダイレクト対策）。
+     * '/x' や 'x' と、Host が今のリクエストと同じ http(s) の絶対 URL だけ true。
+     * '//evil' '/\evil' のようにブラウザが別ホストと解釈する形や、制御文字入り（ブラウザが除去して '//' になる）は false
+     */
+    public function isLocalUrl(string $url): bool
+    {
+        if ($url === '' || preg_match('/[\x00-\x1f\x7f]/', $url)) return false;
+        if (preg_match('#^[/\\\\]{2}|^\\\\#', $url)) return false;   // '//x' '/\x' '\\x' '\x' はブラウザが別ホストと解釈
+        if (!preg_match('#^[a-z][a-z0-9+.-]*:#i', $url)) return true;   // スキームなし＝サイト内の相対/絶対パス
+        $p = parse_url($url);
+        if (!$p || !in_array(strtolower($p['scheme'] ?? ''), ['http', 'https'], true) || !isset($p['host'])) return false;
+        $host = strtolower($p['host']) . (isset($p['port']) ? ':' . $p['port'] : '');
+        return $host === strtolower($this->request()->host());
+    }
+
+    /**
      * Absolute URL (scheme + host) for mail bodies, QR codes, OAuth callbacks…
      * APP_URL があればそれを起点にする（basePath も含めて書く）。無ければ現在のリクエストの Host から作るが、
      * Host ヘッダは送信側が自由に書けるので、本番でメールに載せるなら APP_URL を設定すること。
@@ -426,6 +442,13 @@ class App
     // ── errors ───────────────────────────────────────────────────────────
 
     private function errorResponse(\Throwable $e, Request $request): Response
+    {
+        $res = $this->renderError($e, $request);
+        if ($e instanceof HttpException) foreach ($e->headers as $k => $v) $res->header($k, $v);
+        return $res;
+    }
+
+    private function renderError(\Throwable $e, Request $request): Response
     {
         if ($e instanceof ValidationException) return $e->toResponse($request);
         $status = match (true) {

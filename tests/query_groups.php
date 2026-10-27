@@ -49,4 +49,18 @@ $check('mixed where-types keep unique names', $mixed->count() === 1);
 // 空のグループは WHERE を汚さない
 $check('empty group ignored', !str_contains($sqlOf(Db::table('t')->where('pub', 1)->where(fn($s) => null)), '()'));
 
+// orderBy は列名を常にクォートする（?sort= をそのまま渡しても SQL にならない）。式は orderByRaw()
+$ids = fn(Query $q) => array_map(fn($r) => (int)$r->id, $q->asRaw()->all()->toArray());
+$check('orderBy: col + dir',             $ids(Db::table('t')->orderBy('id', 'desc')) === [3, 2, 1]);
+$check('orderBy: "col DESC" still works', $ids(Db::table('t')->orderBy('t.id DESC')) === [3, 2, 1]);
+$check('orderBy: "col DESC" quoted',      str_contains($sqlOf(Db::table('t')->orderBy('id DESC')), 'ORDER BY "id" DESC'));
+$threw = function (string $col): bool {
+    try { Db::table('t')->orderBy($col); return false; } catch (InvalidArgumentException) { return true; }
+};
+$check('orderBy: subquery rejected',      $threw('(SELECT 1) DESC'));
+$check('orderBy: function rejected',      $threw('RANDOM()'));
+$check('orderBy: tab-joined expr rejected', $threw("id\tDESC,\t(SELECT 1)"));
+$check('orderBy: odd name stays quoted',  str_contains($sqlOf(Db::table('t')->orderBy('id";--')), 'ORDER BY "id"";--" ASC'));
+$check('orderByRaw: passes through',      count($ids(Db::table('t')->orderByRaw('RANDOM()'))) === 3);
+
 exit($fail === 0 ? 0 : 1);

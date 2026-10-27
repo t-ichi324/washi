@@ -8,7 +8,9 @@ namespace Washi;
  */
 class HttpException extends \RuntimeException
 {
-    public function __construct(public readonly int $status = 500, string $message = '', ?\Throwable $previous = null)
+    /** @param array<string, string> $headers 応答に付けるヘッダ（429 の Retry-After など） */
+    public function __construct(public readonly int $status = 500, string $message = '', ?\Throwable $previous = null,
+                                public readonly array $headers = [])
     {
         parent::__construct($message !== '' ? $message : self::title($status), $status, $previous);
     }
