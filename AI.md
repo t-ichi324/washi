@@ -59,7 +59,7 @@
 | エラー処理 | `abort(404)`、`HttpException`、`Db\NotFoundException`→404、`views/_error.{status}.php`→`_error.php`→組み込み画面、`Accept: application/json` なら JSON、デバッグ時はコードプレビュー付き | `App`, `Debug` |
 | デバッグ | `APP_DEBUG=true` で HTML 応答の末尾にパネルを注入（ページ遷移で、かつ `</body>` を含む完全な HTML 文書のときだけ、最後の `</body>` の直前に。fetch/XHR/htmx の部分ロードや断片には入れない＝`Sec-Fetch-Mode`・`X-Requested-With`・`HX-Request` と文書構造で判定。`Sec-Fetch-*` は HTTPS と localhost にしか送られないため構造でも判定する）。部分ロードの中身はパネルの対象外。要約行（処理時間・メモリ・ステータス・SQL 数）＋タブ: Route（解決したページ/ルート・params・通った `_access.php`・応答ヘッダ）/ Request / Views（描画テンプレートと時間）/ Queries（同一 SQL の繰り返しを ×N 表示＝N+1 の疑い）/ Session。password・token・_csrf・cookie などは `***` | `Debug` |
 | 設定 | `.env.defaults`（コミットする既定値）を `.env`（環境ごと）が上書き、実環境変数が最優先 + `new App($root, [...])` の配列。ini などは無い | `Env`, `App` |
-| ログ | 日別ファイル（`storage/log/`）または stderr。`Log::exception()` は 1 行を保ったまま ctx JSON にスタックトレースと `previous` 連鎖を記録（深さは `Log::traceLimit()`、0 で無効） | `Log` |
+| ログ | 日別ファイル（`storage/log/`）または stderr。`Log::exception()` は 1 行を保ったまま ctx JSON にスタックトレースと `previous` 連鎖を記録（深さは `Log::traceLimit()`、0 で無効）。アクセスログは opt-in（`ACCESS_LOG=true`）で `日付-access.log` に 1 リクエスト 1 行（404・405・500 も残る）。書式は `Log::accessFormat(fn(array $e) => '…')` で差し替え | `Log` |
 | 配置 | サブディレクトリ設置（`basePath` 自動検出）、PHP 組み込みサーバー（`return $app->run();` と書くと public/ の実ファイルはサーバーが静的配信する）、Apache/nginx の index.php フォールバック | `Request`, `App` |
 
 ### 提供していないもの（意図的）
@@ -411,12 +411,20 @@ class Meibo extends Washi\Db\Entity { public ?int $id = null; /* ... */ }
 | `session_lifetime` | 0 | `SESSION_LIFETIME` | 秒。ログイン（ID 再生成）からこれを超えたら操作中でも破棄。0 で無効 |
 | `csrf_token` | _token | | フィールド名。環境で変わらない値なので配列に書いてよい（既存フォームの hidden 名に合わせるなど） |
 | `log` | storage | `LOG_TARGET` | `storage` → storage/log/日付.log、`stderr`、または絶対パス |
+| `access_log` | false | `ACCESS_LOG` | true で `App::run()` が応答確定後に 1 行書く（`日付-access.log`、`log` と同じ出力先。stderr なら stderr）。ミドルウェアではなく `run()` が書くので、ルートに当たらない 404/405 や例外の 500 も記録される。`handle()` を直接呼ぶテストでは書かない |
+| `access_ignore` | '' | `ACCESS_LOG_IGNORE` | カンマ区切り。URI にその文字列を含むリクエストは記録しない（ログ閲覧画面・死活監視など） |
 | `url` | '' | `APP_URL` | `abs_url()` の起点（`https://example.jp/app`）。空ならリクエストの Host から |
 | `trusted_proxies` | '' | `TRUSTED_PROXIES` | `Request::ip()` で X-Forwarded-For を信頼する送信元（`*` 可） |
 | `ip_allowlist` | whitelist.txt | `IP_ALLOWLIST` | `->ipAllowlist()` / `ip_allowed()` の一覧（root 相対か絶対）。無い・空なら制限なし |
 | `security_headers` | true | | X-Frame-Options / nosniff / Referrer-Policy |
 
 `Log::traceLimit(int $frames)` で例外ログのスタックフレーム数を変更できる（既定 20、0 でトレース無しの 1 行に戻る）。
+
+**アクセスログの書式**: 既定は `時刻 ⇥ ステータス ⇥ 処理時間 ⇥ IP ⇥ ユーザー(未ログインは -) ⇥ メソッド ⇥ URI`（タブ区切り）。変えるなら `new App()` の後で一度だけ（UA・絵文字・セッション短縮ハッシュなどはアプリ側で足す。FW は UA の解析を持たない）:
+```php
+Washi\Log::accessFormat(fn(array $e) => implode("\t", [$e['time'], $e['status'], $e['ms'] . 'ms', $e['ip'], $e['sid'] ?? '-', $e['user'] ?? '---', $e['method'], $e['uri'], $e['ua']]));
+```
+`$e` のキー: `time status ms ip user sid method uri ua referer`。`user` は `Auth::id()`（ログイン済みのときだけ）、`sid` はセッション ID の短縮ハッシュ（セッションが始まっていなければ null）。アクセスログのためにセッションを新たに開始することはない。`ms` は App 生成から応答確定まで（送信時間は含まない）。書式が例外を投げてもリクエストは壊れず、エラーログに残して既定の書式で書く。最低ログレベルの影響は受けない。
 
 **優先順位**（Env::load は既にあるキーを上書きしない＝先勝ち）:
 `実環境変数 > new App() 前に Env::load() したファイル > .env > .env.defaults > コード内の既定値`。

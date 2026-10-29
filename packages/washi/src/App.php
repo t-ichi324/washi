@@ -69,6 +69,8 @@ class App
             'session_lifetime' => Env::int('SESSION_LIFETIME', 0), // 秒。ログイン（ID 再生成）からこれを超えたら破棄。0 で無効
             'csrf_token'     => '_token',
             'log'            => Env::get('LOG_TARGET', 'storage'),   // 'stderr' | 'storage' | absolute dir
+            'access_log'     => Env::bool('ACCESS_LOG', false),           // true で 1 リクエスト 1 行を <日付>-access.log へ（Log::access）
+            'access_ignore'  => Env::get('ACCESS_LOG_IGNORE', ''),         // カンマ区切り。URI に含まれていたら記録しない
             'trusted_proxies'=> Env::get('TRUSTED_PROXIES', ''),
             'ip_allowlist'   => Env::get('IP_ALLOWLIST', 'whitelist.txt'),   // IpAllowlist の一覧（root 相対か絶対）。無い・空なら制限なし
             'url'            => Env::get('APP_URL', ''),     // 外に出す絶対 URL の起点（https://example.com/app）。空ならリクエストの Host から作る
@@ -89,6 +91,7 @@ class App
         $logTarget = $this->config['log'];
         Log::to($logTarget === 'storage' ? $this->path($this->config['storage'], 'log') : $logTarget,
             $this->config['debug'] ? 'debug' : 'info');
+        Log::accessEnable((bool)$this->config['access_log'], explode(',', (string)$this->config['access_ignore']));
         Session::configure($this->config['session_name'], $this->config['session_idle'], $this->config['session_lifetime']);
         Security::configure($this->config['csrf_token']);
         View::configure($this->path($this->config['views']), $this->config['layout']);
@@ -215,8 +218,32 @@ class App
         // 戻り値になり、組み込みサーバーが自分でファイルを配信する。
         if ($this->isStaticFileRequest()) return false;
 
-        $this->handle($this->request())->send();
+        $response = $this->handle($request = $this->request());
+        $this->logAccess($request, $response);
+        $response->send();
         return true;
+    }
+
+    /**
+     * アクセスログ 1 行。最終のステータスを知っているのはここだけ（404・405・500 はミドルウェアの外で決まる）。
+     * 処理時間は App 生成から応答確定まで（送信は含まない）。セッションは新たに開始せず、既に始まっていれば使う。
+     */
+    private function logAccess(Request $request, Response $response): void
+    {
+        if (!Log::accessEnabled()) return;
+        $clean = fn(string $s) => preg_replace('/[\x00-\x1f\x7f]/', ' ', $s);   // 1 行を保つ（ログ偽造対策）
+        $user = Session::isActive() && Session::has('_auth') ? Auth::id() : null;
+        Log::access([
+            'status'  => $response->getStatus(),
+            'ms'      => (int)round((microtime(true) - $this->startedAt) * 1000),
+            'ip'      => $request->ip($this->config['trusted_proxies']),
+            'user'    => $user === null ? null : $clean((string)$user),
+            'sid'     => Session::isActive() && session_id() !== '' ? substr(md5(session_id()), 0, 8) : null,
+            'method'  => $request->method,
+            'uri'     => $clean((string)($request->server['REQUEST_URI'] ?? $request->path)),
+            'ua'      => $clean($request->userAgent()),
+            'referer' => $clean((string)$request->referer()),
+        ]);
     }
 
     /**

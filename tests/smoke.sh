@@ -32,6 +32,26 @@ check "panel: fragment → not injected" "0"                         "$(curl -s 
 check "security headers"          "X-Content-Type-Options: nosniff" "$(curl -s -i $B/)"
 stop 8571
 
+# アクセスログ（App::run から）: 404 / 405 のようにミドルウェアの外で決まる応答も残る。OFF なら何も書かない
+echo "== access log via App::run"
+ALOG="$TMP/alog"; rm -rf "$ALOG"
+ACCESS_LOG=true ACCESS_LOG_IGNORE=/api/echo LOG_TARGET="$ALOG" serve 8573 "$ROOT/examples/hello" index.php
+B=http://127.0.0.1:8573
+curl -s -o /dev/null $B/api/time; curl -s -o /dev/null $B/nope; curl -s -o /dev/null -X DELETE $B/api/time
+curl -s -o /dev/null -X POST -d 'a=1' $B/api/echo; curl -s -o /dev/null $B/api/time
+AFILE="$(ls "$ALOG"/*-access.log 2>/dev/null | head -1)"; ACC="$(cat "$AFILE" 2>/dev/null)"
+check "access: 200 recorded"           "$(printf '\t200\t')" "$ACC"
+check "access: 404 recorded"           "$(printf '\t404\t')" "$ACC"
+check "access: 405 recorded"           "$(printf '\t405\t')" "$ACC"
+check "access: method + uri columns"   "$(printf 'GET\t/nope')" "$ACC"
+check "access: ignored URI skipped"    "0" "$(grep -c '/api/echo' <<< "$ACC")"
+check "access: one line per request"   "3" "$(grep -c '/api/time' <<< "$ACC")"   # GET 2 回 + DELETE（405）。起動確認の / は数えない
+stop 8573
+rm -f "$ROOT"/examples/hello/storage/log/*-access.log; serve 8574 "$ROOT/examples/hello" index.php
+curl -s -o /dev/null http://127.0.0.1:8574/api/time
+check "access: off by default"         "0" "$(ls "$ROOT"/examples/hello/storage/log/*-access.log 2>/dev/null | wc -l | tr -d ' ')"
+stop 8574
+
 echo "== examples/notes (pages/ + views/ + Entity + CSRF + flash)"
 rm -f "$ROOT/examples/notes/storage/app.db"* "$J"; serve 8572 "$ROOT/examples/notes" -t public public/index.php
 B=http://127.0.0.1:8572; C="-s -c $J -b $J"
@@ -313,5 +333,17 @@ while IFS= read -r line; do
     *)        fail "rate_limiter.php: $line";;
   esac
 done <<< "$ROUT"
+
+# Log::access: 書式・既定 OFF・除外・書式の差し替え・書式の例外
+echo
+echo "== washi Log::access"
+AOUT="$(cd "$ROOT" && php tests/access_log.php 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*)   ok   "${line#ok }";;
+    "FAIL "*) fail "${line#FAIL }";;
+    *)        fail "access_log.php: $line";;
+  esac
+done <<< "$AOUT"
 
 echo; echo "passed: $PASS  failed: $FAIL"; rm -rf "$TMP"; [ "$FAIL" -eq 0 ]
